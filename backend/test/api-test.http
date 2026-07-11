@@ -1,0 +1,261 @@
+### Bold POS API – Test Trace
+### Base: http://localhost:3000/api/v1
+### Run with VSCode REST Client
+
+@base = http://localhost:3000/api/v1
+@token = 
+
+### 1. AUTH – Login
+# @name login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{
+  "phone": "+200100000000",
+  "password": "Bold1234"
+}
+
+### Set token manually: @token = <access_token from login>
+
+### 2. PRODUCTS – Search by barcode
+GET {{base}}/products/search?q=6223001000011
+Authorization: Bearer {{token}}
+
+### 3. PRODUCTS – Create
+POST {{base}}/products
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name_en": "Test Polo",
+  "sku": "BOLD-TEST-001-M-RED",
+  "barcode_ean13": "6223001999999",
+  "barcode_internal": "BOLD-TEST-001-M-RED",
+  "size": "M",
+  "color": "Red",
+  "cost_price": 120,
+  "brand": "Bold"
+}
+
+### 4. PRICING – Calculate
+POST {{base}}/pricing/calculate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "variant_id": "<paste-variant-id-from-search>"
+}
+
+### 5. INVENTORY – Lookup across branches
+GET {{base}}/inventory/lookup?variant_id=<variant-id>
+Authorization: Bearer {{token}}
+
+### 6. CUSTOMERS – List
+GET {{base}}/customers?q=0101
+Authorization: Bearer {{token}}
+
+### 7. CUSTOMERS – Loyalty check
+GET {{base}}/customers/loyalty?phone=01011111111
+Authorization: Bearer {{token}}
+
+### 8. CUSTOMERS – Create
+POST {{base}}/customers
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "عميل اختبار",
+  "phone": "01099999999",
+  "whatsapp": "01099999999",
+  "email": "test@bold.eg"
+}
+
+### 9. CUSTOMERS – Set VIP
+POST {{base}}/customers/<customer-id>/vip
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "is_vip": true,
+  "vip_price_tier": "cost_plus_overhead"
+}
+
+### 10. POS – Sale
+POST {{base}}/pos/sale
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sync_id": "00000000-0000-0000-0000-000000000001",
+  "branch_id": "<branch-BOLD-01-id>",
+  "customer_phone": "01011111111",
+  "payment_method": "cash",
+  "language": "ar",
+  "items": [
+    {
+      "variant_id": "<variant-id>",
+      "qty": 1,
+      "unit_price": 150,
+      "unit_cost": 85
+    }
+  ]
+}
+
+### 11. POS – Return
+POST {{base}}/pos/return
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "original_invoice_id": "<sales-invoice-id>",
+  "items": [{ "variant_id": "<variant-id>", "qty": 1 }],
+  "created_by": "<cashier-user-id>"
+}
+
+### 12. SALES – PDF Invoice AR
+GET {{base}}/sales/<invoice-id>/pdf?lang=ar
+Authorization: Bearer {{token}}
+
+### 13. SALES – PDF Invoice EN
+GET {{base}}/sales/<invoice-id>/pdf?lang=en
+Authorization: Bearer {{token}}
+
+### 14. SUPPLIERS – List
+GET {{base}}/suppliers?q=Mohamed
+Authorization: Bearer {{token}}
+
+### 15. SUPPLIERS – Create
+POST {{base}}/suppliers
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "تاجر اختبار",
+  "company_name": "Test Trading Co.",
+  "phone": "01299999999",
+  "alias_names": ["Test Co", "TTCo"]
+}
+
+### 16. SUPPLIERS – Resolve alias (OCR)
+GET {{base}}/suppliers/resolve/alias?name=Mohamed%20Fabrics%20Co.
+Authorization: Bearer {{token}}
+
+### 17. PURCHASING – List invoices
+GET {{base}}/purchasing/invoices?branch_id=<branch-id>
+Authorization: Bearer {{token}}
+
+### 18. PURCHASING – Receive stock
+POST {{base}}/purchasing/receive
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "supplier_id": "<supplier-id>",
+  "branch_id": "<branch-id>",
+  "invoice_number": "TEST-001",
+  "discount_percent": 5,
+  "items": [
+    { "variant_id": "<variant-id>", "qty": 50, "unit_cost": 80 }
+  ],
+  "created_by": "<warehouse-user-id>"
+}
+
+### 19. PURCHASING – OCR import
+POST {{base}}/purchasing/ocr-import
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "fileUrl": "uploads/supplier-invoice-001.pdf"
+}
+
+### 20. TRANSFERS – List
+GET {{base}}/transfers?branch_id=<branch-id>
+Authorization: Bearer {{token}}
+
+### 21. TRANSFERS – Create
+POST {{base}}/transfers
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "from_branch_id": "<branch-1-id>",
+  "to_branch_id": "<branch-2-id>",
+  "created_by": "<manager-user-id>"
+}
+
+### 22. TRANSFERS – Ship
+POST {{base}}/transfers/<transfer-id>/ship
+Authorization: Bearer {{token}}
+
+### 23. TRANSFERS – Receive (with stock movement)
+POST {{base}}/transfers/<transfer-id>/receive
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "items": [
+    { "variant_id": "<variant-id>", "qty": 5 }
+  ]
+}
+
+### 24. REPORTS – Sales
+GET {{base}}/reports/sales?from=2026-06-01&to=2026-07-01&branch_id=<branch-id>
+Authorization: Bearer {{token}}
+
+### 25. REPORTS – Best sellers
+GET {{base}}/reports/best-sellers?branch_id=<branch-id>
+Authorization: Bearer {{token}}
+
+### 26. REPORTS – Send Email/WhatsApp
+POST {{base}}/reports/send
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "from": "2026-06-01",
+  "to": "2026-07-01",
+  "channels": ["email", "whatsapp"]
+}
+
+### 27. OFFERS – Suggestions
+GET {{base}}/offers/suggestions?branch_id=<branch-id>
+Authorization: Bearer {{token}}
+
+### 28. OFFERS – Approve/Reject
+POST {{base}}/offers/<offer-id>/review
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "status": "approved",
+  "reviewed_by": "<owner-user-id>"
+}
+
+### 29. BRANCHES – List
+GET {{base}}/branches
+Authorization: Bearer {{token}}
+
+### 30. USERS – List
+GET {{base}}/users
+Authorization: Bearer {{token}}
+
+### 31. SYNC – Pull (POS offline)
+GET {{base}}/sync/pull?branch_id=<branch-id>&since=2026-01-01T00:00:00Z
+Authorization: Bearer {{token}}
+
+### 32. SYNC – Push (POS offline)
+POST {{base}}/sync/push
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "batch": []
+}
+
+### End – 32 endpoints traced
+### Seed data includes:
+### - 12 products, 28 variants, barcodes 6223001000011 …
+### - 8 customers – VIP: 01011111111, 01033333333
+### - 15 sales invoices, 2 returns
+### - Users: +200100000000 … +200100000003 / Bold1234

@@ -1,0 +1,221 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Branch {
+  id                    String   @id @default(uuid()) @db.Uuid
+  code                  String   @unique
+  name_ar               String
+  name_en               String?
+  address               String?
+  phone                 String?
+  cash_drawer_enabled   Boolean  @default(false)
+  is_active             Boolean  @default(true)
+  created_at            DateTime @default(now())
+  users                 User[]
+  inventory             InventoryStock[]
+  sales                 SalesInvoice[]
+}
+
+model User {
+  id            String  @id @default(uuid()) @db.Uuid
+  branch_id     String? @db.Uuid
+  branch        Branch? @relation(fields: [branch_id], references: [id])
+  name          String
+  phone         String? @unique
+  email         String? @unique
+  password_hash String
+  role          Role
+  is_active     Boolean @default(true)
+  created_at    DateTime @default(now())
+}
+
+enum Role {
+  owner
+  branch_manager
+  cashier
+  warehouse_manager
+}
+
+model Supplier {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  company_name String?
+  phone        String?
+  alias_names  String[]
+  created_at   DateTime @default(now())
+  purchases    PurchaseInvoice[]
+}
+
+model Category {
+  id        String  @id @default(uuid()) @db.Uuid
+  name_ar   String
+  name_en   String?
+  parent_id String? @db.Uuid
+}
+
+model Product {
+  id            String   @id @default(uuid()) @db.Uuid
+  sku_base      String?  @unique
+  name_en       String
+  name_ar       String?
+  category_id   String?  @db.Uuid
+  brand         String?
+  image_url     String?
+  is_active     Boolean  @default(true)
+  has_variants  Boolean  @default(true)
+  created_at    DateTime @default(now())
+  variants      ProductVariant[]
+}
+
+model ProductVariant {
+  id               String   @id @default(uuid()) @db.Uuid
+  product_id       String   @db.Uuid
+  product          Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  sku              String   @unique
+  barcode_ean13    String?
+  barcode_internal String?  @unique
+  size             String?
+  color            String?
+  style            String?
+  cost_price       Decimal  @db.Decimal(12,2)
+  return_count     Int      @default(0)
+  qa_flag          Boolean  @default(false)
+  created_at       DateTime @default(now())
+  inventory        InventoryStock[]
+  @@index([barcode_ean13, barcode_internal])
+}
+
+model PricingRule {
+  id                String  @id @default(uuid()) @db.Uuid
+  name              String
+  scope_type        String  // global|category|brand|product|variant
+  scope_id          String? @db.Uuid
+  overhead_percent  Decimal @default(0) @db.Decimal(5,2)
+  profit_percent    Decimal @default(0) @db.Decimal(5,2)
+  tax_percent       Decimal @default(14) @db.Decimal(5,2)
+  formula           String  @default("compound")
+  is_protected      Boolean @default(false)
+  priority          Int     @default(100)
+  is_active         Boolean @default(true)
+}
+
+model InventoryStock {
+  branch_id     String @db.Uuid
+  variant_id    String @db.Uuid
+  branch        Branch @relation(fields: [branch_id], references: [id])
+  variant       ProductVariant @relation(fields: [variant_id], references: [id])
+  qty_on_hand   Int    @default(0)
+  qty_reserved  Int    @default(0)
+  last_sold_at  DateTime?
+  @@id([branch_id, variant_id])
+}
+
+model Customer {
+  id               String  @id @default(uuid()) @db.Uuid
+  name             String?
+  phone            String? @unique
+  whatsapp         String?
+  email            String?
+  is_vip           Boolean @default(false)
+  vip_price_tier   String  @default("cost_plus_overhead")
+  total_invoices   Int     @default(0)
+  total_spent      Decimal @default(0) @db.Decimal(12,2)
+  created_at       DateTime @default(now())
+  sales            SalesInvoice[]
+}
+
+model SalesInvoice {
+  id               String   @id @default(uuid()) @db.Uuid
+  invoice_number   String   @unique
+  branch_id        String   @db.Uuid
+  branch           Branch   @relation(fields: [branch_id], references: [id])
+  customer_id      String?  @db.Uuid
+  customer         Customer? @relation(fields: [customer_id], references: [id])
+  cashier_id       String?  @db.Uuid
+  status           String   @default("completed")
+  subtotal         Decimal  @db.Decimal(12,2)
+  discount_amount  Decimal  @default(0) @db.Decimal(12,2)
+  tax_amount       Decimal  @db.Decimal(12,2)
+  total            Decimal  @db.Decimal(12,2)
+  payment_method   String
+  language         String   @default("ar")
+  sync_id          String?  @unique @db.Uuid
+  created_at       DateTime @default(now())
+  items            SalesInvoiceItem[]
+  @@index([branch_id, created_at])
+}
+
+model SalesInvoiceItem {
+  id                String  @id @default(uuid()) @db.Uuid
+  sales_invoice_id  String  @db.Uuid
+  invoice           SalesInvoice @relation(fields: [sales_invoice_id], references: [id], onDelete: Cascade)
+  variant_id        String  @db.Uuid
+  qty               Int
+  unit_price        Decimal @db.Decimal(12,2)
+  unit_cost         Decimal @db.Decimal(12,2)
+}
+
+model Return {
+  id                   String   @id @default(uuid()) @db.Uuid
+  original_invoice_id  String   @db.Uuid
+  new_invoice_id       String?  @db.Uuid
+  return_invoice_number String  @unique
+  reason               String?
+  is_partial           Boolean  @default(false)
+  created_by           String?  @db.Uuid
+  created_at           DateTime @default(now())
+}
+
+model PurchaseInvoice {
+  id               String   @id @default(uuid()) @db.Uuid
+  supplier_id      String   @db.Uuid
+  supplier         Supplier @relation(fields: [supplier_id], references: [id])
+  branch_id        String   @db.Uuid
+  invoice_number   String?
+  invoice_date     DateTime? @db.Date
+  subtotal         Decimal  @db.Decimal(12,2)
+  discount_amount  Decimal  @default(0) @db.Decimal(12,2)
+  discount_percent Decimal  @default(0) @db.Decimal(5,2)
+  total            Decimal  @db.Decimal(12,2)
+  ocr_source_file  String?
+  created_by       String?  @db.Uuid
+  created_at       DateTime @default(now())
+}
+
+model Transfer {
+  id              String   @id @default(uuid()) @db.Uuid
+  from_branch_id  String   @db.Uuid
+  to_branch_id    String   @db.Uuid
+  status          String   @default("pending")
+  transfer_number String   @unique
+  created_by      String?  @db.Uuid
+  created_at      DateTime @default(now())
+}
+
+model OfferSuggestion {
+  id                String   @id @default(uuid()) @db.Uuid
+  variant_id        String   @db.Uuid
+  branch_id         String   @db.Uuid
+  days_unsold       Int
+  current_price     Decimal  @db.Decimal(12,2)
+  suggested_price   Decimal  @db.Decimal(12,2)
+  min_allowed_price Decimal  @db.Decimal(12,2)
+  status            String   @default("pending")
+  reviewed_by       String?  @db.Uuid
+  created_at        DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String?  @db.Uuid
+  action     String
+  entity     String?
+  entity_id  String?  @db.Uuid
+  meta       Json?
+  created_at DateTime @default(now())
+}

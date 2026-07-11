@@ -1,0 +1,62 @@
+#Business
+business-control/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+dist/
+dist-electron/
+build/
+out/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.rspack/
+coverage/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# DB / uploads – local only
+*.sqlite
+*.sqlite3
+*.db
+bold_pos.db
+uploads/
+*.mp3
+*.wav
+
+# Electron
+*.exe
+*.dmg
+*.AppImage
+*.snap
+*.blockmap
+
+# Prisma
+prisma/migrations/
+# keep: prisma/schema.prisma, prisma/seed.ts
+
+# Misc
+.cache/
+.parcel-cache/
