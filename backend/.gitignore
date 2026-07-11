@@ -1,0 +1,7 @@
+# Backend inherits from root .gitignore
+# This file exists as a fallback if you open this subfolder independently
+node_modules/
+dist/
+.env
+.env.local
+*.log
