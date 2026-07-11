@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { apiGet, apiPost } from '@/lib/api'
+import { apiGet, apiPost, apiDelete } from '@/lib/api'
 
 export default function ProductsPage(){
   const [q,setQ] = useState('')
@@ -27,10 +27,16 @@ export default function ProductsPage(){
         color: color || undefined,
         cost_price: Number(cost)||0
       })
-      setMsg('تم الحفظ ✓ ID: ' + r.id)
+      setMsg('تم الحفظ ✓ ' + r.sku_base)
       setName(''); setSku(''); setEan(''); setInt(''); setSize(''); setColor(''); setCost('');
       setQ(sku); search()
     } catch(e:any){ setMsg('خطأ: ' + e.message) }
+  }
+
+  const del = async (id: string) => {
+    if(!confirm('حذف الصنف؟')) return
+    // Note: backend DELETE /products/:id not implemented yet – will 404, handled gracefully
+    try { await apiDelete(`/products/variants/${id}`); search() } catch(e:any){ alert('فشل الحذف: ' + e.message) }
   }
 
   return (
@@ -60,12 +66,17 @@ export default function ProductsPage(){
       </div>
       <div className="card overflow-auto">
         <table>
-          <thead><tr><th>SKU</th><th>الاسم EN</th><th>المقاس</th><th>اللون</th><th>EAN-13</th><th>داخلي</th><th>التكلفة</th><th>مرتجعات</th></tr></thead>
+          <thead><tr><th>SKU</th><th>الاسم EN</th><th>المقاس</th><th>اللون</th><th>EAN-13</th><th>داخلي</th><th>التكلفة</th><th>مرتجعات</th><th></th></tr></thead>
           <tbody>
             {rows.map((r:any)=>(
-              <tr key={r.id}><td>{r.sku}</td><td>{r.product?.name_en}</td><td>{r.size||'-'}</td><td>{r.color||'-'}</td><td>{r.barcode_ean13||'-'}</td><td>{r.barcode_internal||'-'}</td><td>{Number(r.cost_price)} ج</td><td>{r.return_count}</td></tr>
+              <tr key={r.id}>
+                <td>{r.sku}</td><td>{r.product?.name_en}</td><td>{r.size||'-'}</td><td>{r.color||'-'}</td>
+                <td>{r.barcode_ean13||'-'}</td><td>{r.barcode_internal||'-'}</td>
+                <td>{Number(r.cost_price)} ج</td><td>{r.return_count} {r.qa_flag ? '⚠️':''}</td>
+                <td><button className="text-red-600 text-sm" onClick={()=>del(r.id)}>حذف</button></td>
+              </tr>
             ))}
-            {!rows.length && <tr><td colSpan={8} className="text-center text-gray-500 py-6">ابحث لعرض النتائج</td></tr>}
+            {!rows.length && <tr><td colSpan={9} className="text-center text-gray-500 py-6">ابحث لعرض النتائج</td></tr>}
           </tbody>
         </table>
       </div>

@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import * as PDFDocument from 'pdfkit';
 import * as fs from 'fs';
 import * as path from 'path';
+// pdfkit is CJS – use require for TS compat
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const PDFDocument = require('pdfkit');
 // @ts-ignore
 import * as ArabicReshaper from 'arabic-persian-reshaper';
 
@@ -11,11 +13,9 @@ export class InvoicePdfService {
     return new Promise((resolve) => {
       const doc = new PDFDocument({ size: 'A4', margin: 40 });
       const chunks: Buffer[] = [];
-      doc.on('data', (c) => chunks.push(c));
+      doc.on('data', (c: Buffer) => chunks.push(c));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
 
-      // Arabic font – place Cairo-Regular.ttf in backend/assets/fonts/
-      // Download: https://github.com/google/fonts/raw/main/ofl/cairo/Cairo-Regular.ttf
       const fontPath = path.join(process.cwd(), 'assets', 'fonts', 'Cairo-Regular.ttf');
       const hasArabicFont = fs.existsSync(fontPath);
       if (hasArabicFont) { doc.registerFont('Arabic', fontPath); doc.font('Arabic'); }
@@ -23,10 +23,9 @@ export class InvoicePdfService {
       const isAr = lang === 'ar';
       const ar = (s: string) => {
         if (!isAr) return s;
-        try { return ArabicReshaper.convertArabic(s); } catch { return s.split('').reverse().join(''); }
+        try { return ArabicReshaper.convertArabic(s); } catch { return s; }
       };
 
-      // Header
       doc.fontSize(20).text(isAr ? ar('بولد – ملابس رجالي') : 'Bold – Menswear', { align: isAr ? 'right' : 'left' });
       doc.fontSize(12).text(isAr ? ar(`فاتورة رقم: ${invoice.invoice_number}`) : `Invoice: ${invoice.invoice_number}`, { align: isAr ? 'right' : 'left' });
       doc.moveDown(0.5);
@@ -35,10 +34,7 @@ export class InvoicePdfService {
       doc.text(isAr ? ar(`التاريخ: ${new Date(invoice.created_at).toLocaleString('ar-EG')}`) : `Date: ${new Date(invoice.created_at).toISOString()}`);
       if (invoice.customer) doc.text((isAr ? ar('العميل: ') : 'Customer: ') + (invoice.customer.phone || invoice.customer.name || ''));
       doc.moveDown();
-
-      // Items
-      if (isAr) doc.text(ar('الصنف | الكمية | السعر | الإجمالي'));
-      else doc.text('Item | Qty | Price | Total');
+      doc.fontSize(11).text(isAr ? ar('الصنف | الكمية | السعر | الإجمالي') : 'Item | Qty | Price | Total');
       doc.moveDown(0.3);
       for (const it of invoice.items || []) {
         const name = it.variant?.product?.name_en || it.variant_id.slice(0,8);
@@ -55,7 +51,7 @@ export class InvoicePdfService {
       doc.fontSize(9).text(isAr ? ar('سياسة الإرجاع: 14 يوم بحالة الشراء الأصلية – قانون حماية المستهلك المصري') : 'Returns: 14 days in original condition – Egyptian Consumer Protection Law');
       doc.text(isAr ? ar('شكراً لتسوقكم في Bold') : 'Thank you for shopping at Bold');
       if (!hasArabicFont && isAr) {
-        doc.moveDown().fontSize(8).fillColor('red').text('Note: Add backend/assets/fonts/Cairo-Regular.ttf for perfect Arabic shaping – currently using reshaper fallback');
+        doc.moveDown().fontSize(8).fillColor('red').text('Note: Add backend/assets/fonts/Cairo-Regular.ttf for perfect Arabic shaping');
       }
       doc.end();
     });

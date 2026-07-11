@@ -25,7 +25,7 @@ export class TransfersService {
         transfer_number: number,
         created_by: dto.created_by,
         status: 'pending',
-        items: dto.items ? { create: dto.items.map((it:any)=>({ variant_id: it.variant_id, qty: it.qty })) } : undefined
+        items: dto.items && dto.items.length ? { create: dto.items.map((it:any)=>({ variant_id: it.variant_id, qty: it.qty })) } : undefined
       },
       include: { items: true }
     });
