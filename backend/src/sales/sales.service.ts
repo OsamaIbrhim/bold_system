@@ -1,14 +1,100 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { PricingService } from '../pricing/pricing.service';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { randomUUID } from 'crypto';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { assertBranchAccess } from '../auth/branch-access';
+import { ListSalesDto } from './dto/list-sales.dto';
 @Injectable()
 export class SalesService {
   constructor(private prisma: PrismaService, private pricing: PricingService) {}
+
+  async listSales(dto: ListSalesDto, branchId?: string) {
+    const q = dto.q.trim();
+    const where: Prisma.SalesInvoiceWhereInput = {
+      ...(branchId ? { branch_id: branchId } : {}),
+      ...(dto.payment_method ? { payment_method: dto.payment_method } : {}),
+      ...(dto.status ? { status: dto.status } : {}),
+      ...(dto.from || dto.to ? {
+        created_at: {
+          ...(dto.from ? { gte: new Date(dto.from) } : {}),
+          ...(dto.to ? { lte: this.endOfDay(dto.to) } : {}),
+        },
+      } : {}),
+      ...(q ? {
+        OR: [
+          { invoice_number: { contains: q, mode: 'insensitive' } },
+          { customer: { phone: { contains: q } } },
+          { customer: { name: { contains: q, mode: 'insensitive' } } },
+        ],
+      } : {}),
+    };
+    const [total, items] = await this.prisma.$transaction([
+      this.prisma.salesInvoice.count({ where }),
+      this.prisma.salesInvoice.findMany({
+        where,
+        select: {
+          id: true,
+          invoice_number: true,
+          branch_id: true,
+          branch: { select: { code: true, name_ar: true, name_en: true } },
+          customer: { select: { id: true, name: true, phone: true } },
+          cashier_id: true,
+          status: true,
+          subtotal: true,
+          discount_amount: true,
+          tax_amount: true,
+          total: true,
+          payment_method: true,
+          language: true,
+          sync_id: true,
+          created_at: true,
+          _count: { select: { items: true, original_returns: true } },
+        },
+        orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
+        skip: (dto.page - 1) * dto.page_size,
+        take: dto.page_size,
+      }),
+    ]);
+    return {
+      items,
+      page: dto.page,
+      page_size: dto.page_size,
+      total,
+      total_pages: Math.max(1, Math.ceil(total / dto.page_size)),
+      server_time: new Date().toISOString(),
+    };
+  }
+
+  async getInvoice(id: string, actor: AuthenticatedUser) {
+    const invoice = await this.prisma.salesInvoice.findUnique({
+      where: { id },
+      include: {
+        items: {
+          include: {
+            variant: { include: { product: true } },
+            return_items: { where: { return_record: { status: 'completed' } } },
+          },
+        },
+        branch: true,
+        customer: true,
+        original_returns: { include: { items: true }, orderBy: { created_at: 'desc' } },
+      },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    assertBranchAccess(actor, invoice.branch_id, ['owner']);
+    return invoice;
+  }
+
+  private endOfDay(value: string) {
+    const date = new Date(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) date.setUTCHours(23, 59, 59, 999);
+    return date;
+  }
+
   // Create sale – idempotent via sync_id for offline POS
   async createSale(dto: CreateSaleDto, actor: AuthenticatedUser) {
     if (actor.role !== 'owner' && actor.branch_id !== dto.branch_id) {

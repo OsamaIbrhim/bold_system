@@ -98,4 +98,5 @@ export const api = {
   invoiceLookup: (reference: string) => request(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
   returnSale: (payload: any) => request('/pos/return', { method: 'POST', body: JSON.stringify(payload) }),
   pull: (branch_id: string) => request(`/sync/pull?branch_id=${encodeURIComponent(branch_id)}`),
+  heartbeat: (payload: any) => request('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
 }

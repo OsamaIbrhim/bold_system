@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
+import * as os from 'os'
+import { randomUUID } from 'crypto'
 // @ts-ignore
 import initSqlJs from 'sql.js'
 
@@ -14,6 +16,8 @@ function saveDb() { try { const data = db.export(); fs.writeFileSync(dbPath(), B
 function q(sql: string, params: any[] = []) { const stmt = db.prepare(sql); stmt.bind(params); const rows: any[] = []; while (stmt.step()) rows.push(stmt.getAsObject()); stmt.free(); return rows }
 function get(sql: string, params: any[] = []) { const stmt = db.prepare(sql); stmt.bind(params); const r = stmt.step() ? stmt.getAsObject() : undefined; stmt.free(); return r }
 function run(sql: string, params: any[] = []) { const stmt = db.prepare(sql); stmt.bind(params); stmt.step(); stmt.free(); }
+function setMeta(key: string, value: string) { run(`INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)`, [key, value]) }
+function getMeta(key: string) { return String(get(`SELECT value FROM sync_meta WHERE key = ?`, [key])?.value || '') }
 
 async function initDb() {
   const wasmPath = app.isPackaged ? path.join(process.resourcesPath, 'sql-wasm.wasm') : path.join(__dirname, '../node_modules/sql.js/dist/sql-wasm.wasm')
@@ -25,10 +29,14 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS stock (variant_id TEXT PRIMARY KEY, qty INTEGER);
     CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, type TEXT, payload TEXT, sync_status TEXT DEFAULT 'pending', created_at TEXT);
     CREATE TABLE IF NOT EXISTS sales_local (sync_id TEXT PRIMARY KEY, invoice_number TEXT, total REAL, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `)
   // Forward-compatible local schema migration for databases created before
   // tax snapshots were synced with the price book.
   try { db.exec(`ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`) } catch {}
+  if (!getMeta('device_id')) setMeta('device_id', randomUUID())
+  if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
+  if (!getMeta('sync_status')) setMeta('sync_status', 'never')
   saveDb()
 }
 
@@ -68,6 +76,22 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
 })
 ipcMain.handle('sync:get_outbox', () => q(`SELECT * FROM outbox WHERE sync_status='pending'`))
 ipcMain.handle('sync:mark_sent', (_e, ids: string[]) => { for (const id of ids) run(`UPDATE outbox SET sync_status='sent' WHERE id = ?`, [id]); saveDb(); return { ok: true }})
+ipcMain.handle('sync:get_status', () => ({
+  device_id: getMeta('device_id'),
+  terminal_name: getMeta('terminal_name'),
+  app_version: app.getVersion(),
+  sync_status: getMeta('sync_status') || 'never',
+  last_sync_at: getMeta('last_sync_at') || null,
+  last_error: getMeta('last_error') || null,
+  pending_count: Number(get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status='pending'`)?.count || 0),
+}))
+ipcMain.handle('sync:set_status', (_e, status: any) => {
+  if (status.sync_status) setMeta('sync_status', String(status.sync_status))
+  if (status.last_sync_at) setMeta('last_sync_at', String(status.last_sync_at))
+  setMeta('last_error', status.last_error ? String(status.last_error).slice(0, 500) : '')
+  saveDb()
+  return { ok: true }
+})
 ipcMain.handle('sync:apply_pull', (_e, data: any) => {
   for (const p of data.products||[]) run(`INSERT OR REPLACE INTO products (id,sku,name_en,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax) VALUES (?,?,?,?,?,?,?,?,?,?)`, [p.id, p.sku, p.name_en||'', p.barcode_ean13||null, p.barcode_internal||null, p.size||null, p.color||null, 0, Number(p.selling_price||0), Number(p.unit_tax||0)])
   for (const s of data.stock||[]) run(`INSERT OR REPLACE INTO stock (variant_id, qty) VALUES (?,?)`, [s.variant_id, s.qty_on_hand||0])
@@ -79,8 +103,11 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
 // Software kick fallback: ESC p 0 25 250
 ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar'|'en' = 'ar') => {
   const isAr = lang === 'ar'
+  const escapeHtml = (value: unknown) => String(value ?? '')
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&#039;')
   const itemsHtml = (invoice.items || []).map((it:any) => `
-    <tr><td>${it.name || it.sku}</td><td>${it.qty}</td><td>${it.unit_price}</td><td>${(it.unit_price*it.qty).toFixed(0)}</td></tr>
+    <tr><td>${escapeHtml(it.name || it.sku)}</td><td>${Number(it.qty)}</td><td>${Number(it.unit_price)}</td><td>${(Number(it.unit_price)*Number(it.qty)).toFixed(2)}</td></tr>
   `).join('')
   const html = `<!doctype html><html lang="${isAr?'ar':'en'}" dir="${isAr?'rtl':'ltr'}"><head><meta charset="utf-8">
   <style>
@@ -95,24 +122,36 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar'|'en' = 'ar') => 
     .small { font-size:10px; }
   </style></head><body>
   <h2>Bold</h2>
-  <div class="center small">ملابس رجالي – Men's Clothing<br/>${isAr ? 'فاتورة' : 'Invoice'} ${invoice.invoice_number || ''}<br/>${new Date().toLocaleString(isAr?'ar-EG':'en-GB')}</div>
+  <div class="center small">ملابس رجالي – Men's Clothing<br/>${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br/>${new Date().toLocaleString(isAr?'ar-EG':'en-GB')}</div>
   <hr>
   <table><thead><tr><th>${isAr?'الصنف':'Item'}</th><th>${isAr?'ك':'Q'}</th><th>${isAr?'السعر':'Price'}</th><th>${isAr?'الإجمالي':'Total'}</th></tr></thead>
   <tbody>${itemsHtml}</tbody></table>
   <div class="totals">
-    ${isAr ? 'الإجمالي' : 'Total'}: <b>${invoice.total || 0} ${isAr ? 'ج' : 'EGP'}</b><br>
+    ${isAr ? 'الإجمالي' : 'Total'}: <b>${Number(invoice.total || 0).toFixed(2)} ${isAr ? 'ج' : 'EGP'}</b><br>
     <span class="small">${isAr ? 'شامل الضريبة' : 'VAT included'}</span>
   </div>
   <hr>
   <div class="center small">${isAr ? 'سياسة الإرجاع: 14 يوم بحالة الشراء الأصلية' : 'Returns: 14 days original condition'}<br>شكراً لتسوقكم في Bold – Thank you</div>
-  <script>window.onload = () => { window.print(); setTimeout(()=>window.close(), 500) }</script>
   </body></html>`
   const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: false }})
-  await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-  printWin.webContents.print({ silent: false, printBackground: false }, (success) => {
-    if (!success) console.log('Print cancelled')
-    printWin.close()
-  })
+  try {
+    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+    const result = await new Promise<{ success: boolean, reason?: string }>((resolve) => {
+      let settled = false
+      const finish = (success: boolean, reason?: string) => {
+        if (settled) return
+        settled = true
+        resolve({ success, reason })
+      }
+      printWin.once('closed', () => finish(false, 'Print window was closed'))
+      printWin.webContents.print({ silent: false, printBackground: false }, (success, reason) => finish(success, reason))
+    })
+    if (!printWin.isDestroyed()) printWin.destroy()
+    if (!result.success) return { ok: false, printed: false, reason: result.reason || 'Print cancelled' }
+  } catch (error: any) {
+    if (!printWin.isDestroyed()) printWin.destroy()
+    return { ok: false, printed: false, reason: error?.message || 'Unable to print' }
+  }
   // Cash drawer kick – if printer is configured to kick on print, hardware does it automatically.
   // Software fallback (ESC/POS): 0x1b 0x70 0x00 0x19 0xfa – would need raw USB – omitted for no-native build.
   // For now: log it – enable "Cash Drawer – Open before printing" in Windows Printer Preferences.

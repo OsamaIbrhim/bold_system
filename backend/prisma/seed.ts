@@ -10,6 +10,7 @@ async function main() {
   await prisma.returnItem.deleteMany();
   await prisma.return.deleteMany();
   await prisma.refreshToken.deleteMany();
+  await prisma.posTerminal.deleteMany();
   await prisma.salesInvoiceItem.deleteMany();
   await prisma.salesInvoice.deleteMany();
   await prisma.purchaseInvoiceItem.deleteMany();

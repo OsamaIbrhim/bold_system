@@ -4,6 +4,7 @@ import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'crypto';
 import { Prisma, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { capabilitiesFor } from './permissions';
 
 @Injectable()
 export class AuthService {
@@ -46,6 +47,15 @@ export class AuthService {
 
   async hash(password: string) { return bcrypt.hash(password, 12); }
 
+  async me(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, role: true, branch_id: true, is_active: true },
+    });
+    if (!user?.is_active) throw new UnauthorizedException();
+    return { ...user, capabilities: capabilitiesFor(user.role) };
+  }
+
   private async createSession(user: User, transaction?: Prisma.TransactionClient) {
     const db = transaction || this.prisma;
     const refreshToken = randomBytes(48).toString('base64url');
@@ -60,7 +70,13 @@ export class AuthService {
     return {
       access_token: await this.jwt.signAsync(payload),
       refresh_token: refreshToken,
-      user: { id: user.id, name: user.name, role: user.role, branch_id: user.branch_id },
+      user: {
+        id: user.id,
+        name: user.name,
+        role: user.role,
+        branch_id: user.branch_id,
+        capabilities: capabilitiesFor(user.role),
+      },
     };
   }
 

@@ -1,21 +1,10 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { apiGet, apiPost } from '@/lib/api'
+import { apiGet, apiPost, getStoredUser } from '@/lib/api'
 export default function Purchasing(){
-  const [invoices,setInvoices]=useState<any[]>([])
-  const [suppliers,setSuppliers]=useState<any[]>([])
-  const [supplierId,setSupplierId]=useState('')
-  const [branchId,setBranchId]=useState('')
-  const load = async()=>{ const r = await apiGet('/purchasing/invoices'); setInvoices(r||[]) }
-  const loadSuppliers = async()=>{ const r = await apiGet('/suppliers'); setSuppliers(r||[]) }
-  useEffect(()=>{ load(); loadSuppliers() },[])
-  return (<div className="space-y-4"><h1 className="text-2xl font-bold">المشتريات</h1>
-  <div className="card"><h2 className="font-bold mb-2">استلام بضاعة – سريع</h2>
-  <div className="text-sm text-gray-600">استخدم شاشة الـ POS / Warehouse لاستلام البضاعة بالباركود – API: POST /purchasing/receive<br/>الموردين المتاحين: {suppliers.map((s:any)=>s.name).join(', ')}</div>
-  </div>
-  <div className="card"><h2 className="font-bold mb-2">فواتير المشتريات</h2>
-  <table><thead><tr><th>الرقم</th><th>المورد</th><th>الإجمالي</th><th>التاريخ</th></tr></thead>
-  <tbody>{invoices.map((p:any)=><tr key={p.id}><td>{p.invoice_number||p.id.slice(0,8)}</td><td>{p.supplier?.name}</td><td>{Number(p.total)} ج</td><td>{new Date(p.created_at).toLocaleDateString('ar-EG')}</td></tr>)}
-  {!invoices.length && <tr><td colSpan={4} className="text-center text-gray-500 py-4">لا توجد فواتير</td></tr>}
-  </tbody></table></div></div>)
+  const user=getStoredUser();const [invoices,setInvoices]=useState<any[]>([]),[suppliers,setSuppliers]=useState<any[]>([]),[branches,setBranches]=useState<any[]>([]),[products,setProducts]=useState<any[]>([]),[supplier,setSupplier]=useState(''),[branch,setBranch]=useState(user?.branch_id||''),[variant,setVariant]=useState(''),[qty,setQty]=useState(1),[cost,setCost]=useState(''),[number,setNumber]=useState(''),[error,setError]=useState('')
+  const load=async()=>{try{const [i,s,b,p]=await Promise.all([apiGet('/purchasing/invoices'),apiGet('/suppliers'),apiGet('/branches'),apiGet('/products?page=1&page_size=100')]);setInvoices(i||[]);setSuppliers(s||[]);setBranches(b||[]);setProducts(p.items||[])}catch(e:any){setError(e.message)}}
+  useEffect(()=>{load()},[])
+  const receive=async()=>{try{await apiPost('/purchasing/receive',{supplier_id:supplier,branch_id:branch,invoice_number:number||undefined,items:[{variant_id:variant,qty,unit_cost:Number(cost)}]});setVariant('');setQty(1);setCost('');setNumber('');load()}catch(e:any){setError(e.message)}}
+  return <div className="space-y-4"><h1 className="text-2xl font-bold">المشتريات واستلام البضاعة</h1><div className="card"><h2 className="font-bold mb-3">استلام صنف</h2><div className="grid grid-cols-1 md:grid-cols-3 gap-2"><select className="select" value={supplier} onChange={e=>setSupplier(e.target.value)}><option value="">اختر المورد</option>{suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select><select className="select" value={branch} onChange={e=>setBranch(e.target.value)}><option value="">اختر الفرع</option>{branches.map(b=><option key={b.id} value={b.id}>{b.name_ar}</option>)}</select><input className="input" placeholder="رقم فاتورة المورد" value={number} onChange={e=>setNumber(e.target.value)}/><select className="select" value={variant} onChange={e=>setVariant(e.target.value)}><option value="">اختر المنتج</option>{products.map(p=><option key={p.id} value={p.id}>{p.sku} – {p.product?.name_ar||p.product?.name_en}</option>)}</select><input className="input" type="number" min="1" placeholder="الكمية" value={qty} onChange={e=>setQty(Number(e.target.value))}/><input className="input" type="number" min="0" step="0.01" placeholder="تكلفة الوحدة" value={cost} onChange={e=>setCost(e.target.value)}/></div><button className="btn-accent mt-3" disabled={!supplier||!branch||!variant||qty<1||cost===''} onClick={receive}>استلام وتحديث المخزون</button>{error&&<div className="text-red-700 mt-2">{error}</div>}</div><div className="card overflow-auto"><h2 className="font-bold mb-2">فواتير المشتريات</h2><table><thead><tr><th>الرقم</th><th>المورد</th><th>الأصناف</th><th>الإجمالي</th><th>التاريخ</th></tr></thead><tbody>{invoices.map(p=><tr key={p.id}><td>{p.invoice_number||p.id.slice(0,8)}</td><td>{p.supplier?.name}</td><td>{p.items?.reduce((s:number,i:any)=>s+i.qty,0)||0}</td><td>{Number(p.total).toFixed(2)} ج</td><td>{new Date(p.created_at).toLocaleDateString('ar-EG')}</td></tr>)}{!invoices.length&&<tr><td colSpan={5} className="text-center text-gray-500 py-8">لا توجد فواتير مشتريات</td></tr>}</tbody></table></div></div>
 }

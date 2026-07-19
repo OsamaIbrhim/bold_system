@@ -5,9 +5,20 @@ import { Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
+import { ListProductsDto } from './dto/list-products.dto';
 @Controller('products')
 export class ProductsController {
   constructor(private svc: ProductsService) {}
+  @Get()
+  list(
+    @Query() dto: ListProductsDto,
+    @Req() req: Request & { user: AuthenticatedUser },
+  ) {
+    const canReadCost = ['owner', 'branch_manager', 'warehouse_manager'].includes(req.user.role);
+    const branch = resolveBranchScope(req.user, dto.branch_id, ['owner', 'warehouse_manager']);
+    return this.svc.list(dto.q || '', dto.page, dto.page_size, branch, canReadCost);
+  }
+
   @Get('search')
   search(
     @Query('q') q: string,

@@ -25,6 +25,7 @@ model Branch {
   outgoing_transfers    Transfer[] @relation("TransferFromBranch")
   incoming_transfers    Transfer[] @relation("TransferToBranch")
   offer_suggestions     OfferSuggestion[]
+  pos_terminals         PosTerminal[]
 }
 
 model User {
@@ -182,6 +183,28 @@ model SalesInvoice {
   items            SalesInvoiceItem[]
   original_returns Return[] @relation("OriginalInvoiceReturns")
   exchange_returns Return[] @relation("ExchangeInvoiceReturns")
+
+  @@index([branch_id, created_at])
+}
+
+model PosTerminal {
+  id               String   @id @default(uuid()) @db.Uuid
+  device_id        String   @unique @db.Uuid
+  terminal_code    String   @unique
+  name             String
+  branch_id        String   @db.Uuid
+  branch           Branch   @relation(fields: [branch_id], references: [id], onDelete: Restrict)
+  app_version      String?
+  last_seen_at     DateTime?
+  last_sync_at     DateTime?
+  last_sync_status String   @default("never")
+  last_error       String?
+  pending_count    Int      @default(0)
+  is_revoked       Boolean  @default(false)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@index([branch_id, last_seen_at])
 }
 
 model SalesInvoiceItem {

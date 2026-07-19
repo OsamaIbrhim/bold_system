@@ -7,5 +7,7 @@ contextBridge.exposeInMainWorld('bold', {
   sync_get_outbox: () => ipcRenderer.invoke('sync:get_outbox'),
   sync_mark_sent: (ids: string[]) => ipcRenderer.invoke('sync:mark_sent', ids),
   sync_apply_pull: (data: any) => ipcRenderer.invoke('sync:apply_pull', data),
+  sync_get_status: () => ipcRenderer.invoke('sync:get_status'),
+  sync_set_status: (status: any) => ipcRenderer.invoke('sync:set_status', status),
 })
 declare global { interface Window { bold: any } }

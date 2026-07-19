@@ -4,6 +4,41 @@ import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
 @Injectable()
 export class ProductsService {
   constructor(private prisma: PrismaService) {}
+  async list(q: string, page: number, pageSize: number, branchId?: string, includeCost = false) {
+    const query = q.trim();
+    const where = query ? {
+      product: { is_active: true },
+      OR: [
+        { sku: { contains: query, mode: 'insensitive' as const } },
+        { barcode_ean13: query },
+        { barcode_internal: query },
+        { product: { name_en: { contains: query, mode: 'insensitive' as const } } },
+        { product: { name_ar: { contains: query, mode: 'insensitive' as const } } },
+      ],
+    } : { product: { is_active: true } };
+    const [total, variants] = await this.prisma.$transaction([
+      this.prisma.productVariant.count({ where }),
+      this.prisma.productVariant.findMany({
+        where,
+        include: {
+          product: true,
+          inventory: branchId ? { where: { branch_id: branchId } } : true,
+        },
+        orderBy: [{ created_at: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+    const items = variants.map((variant) => this.present(variant, branchId, includeCost));
+    return {
+      items,
+      page,
+      page_size: pageSize,
+      total,
+      total_pages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
+
   async search(q: string, branchId?: string, includeCost = false) {
     const variants = await this.prisma.productVariant.findMany({
       where: {
@@ -17,18 +52,23 @@ export class ProductsService {
       include: {
         product: true,
         inventory: branchId ? { where: { branch_id: branchId } } : true,
-      }
+      },
+      take: 20,
     });
-    return variants.map(v => {
-      const result = {
-        ...v,
-        stock_by_branch: v.inventory,
-        available_here: branchId ? v.inventory.find(i=>i.branch_id===branchId)?.qty_on_hand || 0 : undefined
-      };
-      if (includeCost) return result;
-      const { cost_price: _costPrice, ...safe } = result;
-      return safe;
-    });
+    return variants.map((variant) => this.present(variant, branchId, includeCost));
+  }
+
+  private present(variant: any, branchId?: string, includeCost = false) {
+    const result = {
+      ...variant,
+      stock_by_branch: variant.inventory,
+      available_here: branchId
+        ? variant.inventory.find((item: any) => item.branch_id === branchId)?.qty_on_hand || 0
+        : undefined,
+    };
+    if (includeCost) return result;
+    const { cost_price: _costPrice, ...safe } = result;
+    return safe;
   }
   async createProduct(dto: CreateProductDto) {
     const product = await this.prisma.product.create({

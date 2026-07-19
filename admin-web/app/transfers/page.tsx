@@ -1,22 +1,11 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { apiGet, apiPost } from '@/lib/api'
+import { apiGet, apiPost, getStoredUser } from '@/lib/api'
 export default function Transfers(){
-  const [rows,setRows]=useState<any[]>([])
-  const [from,setFrom]=useState(''), [to,setTo]=useState('')
-  const load = async()=>{ const r = await apiGet('/transfers'); setRows(r||[]) }
-  useEffect(()=>{ load() },[])
-  const create = async()=>{ if(!from||!to) return alert('اختر الفرعين'); await apiPost('/transfers',{from_branch_id:from,to_branch_id:to}); load() }
-  const receive = async(id:string)=>{ await apiPost(`/transfers/${id}/receive`,{items:[]}); load() }
-  return (<div className="space-y-4"><h1 className="text-2xl font-bold">التحويلات بين الفروع</h1>
-  <div className="card"><h2 className="font-bold mb-2">تحويل جديد</h2>
-  <div className="flex gap-2">
-  <input className="input" placeholder="From Branch UUID" value={from} onChange={e=>setFrom(e.target.value)} />
-  <input className="input" placeholder="To Branch UUID" value={to} onChange={e=>setTo(e.target.value)} />
-  <button className="btn-accent" onClick={create}>إنشاء</button></div>
-  <div className="text-xs text-gray-500 mt-2">بعد الإنشاء: /transfers/:id/ship ثم /transfers/:id/receive – يتم نقل المخزون تلقائيا</div></div>
-  <div className="card"><table><thead><tr><th>الرقم</th><th>من</th><th>إلى</th><th>الحالة</th><th></th></tr></thead>
-  <tbody>{rows.map((t:any)=><tr key={t.id}><td>{t.transfer_number}</td><td className="font-mono text-xs">{t.from_branch_id?.slice(0,8)}</td><td className="font-mono text-xs">{t.to_branch_id?.slice(0,8)}</td><td>{t.status}</td><td>{t.status!=='received' && <button className="btn" onClick={()=>receive(t.id)}>استلام</button>}</td></tr>)}
-  {!rows.length && <tr><td colSpan={5} className="text-center text-gray-500 py-4">لا توجد تحويلات</td></tr>}
-  </tbody></table></div></div>)
+  const user=getStoredUser();const [rows,setRows]=useState<any[]>([]),[branches,setBranches]=useState<any[]>([]),[products,setProducts]=useState<any[]>([]),[from,setFrom]=useState(user?.branch_id||''),[to,setTo]=useState(''),[variant,setVariant]=useState(''),[qty,setQty]=useState(1),[error,setError]=useState('')
+  const load=async()=>{try{const [r,b,p]=await Promise.all([apiGet('/transfers'),apiGet('/branches'),apiGet('/products?page=1&page_size=100')]);setRows(r||[]);setBranches(b||[]);setProducts(p.items||[])}catch(e:any){setError(e.message)}}
+  useEffect(()=>{load()},[])
+  const create=async()=>{try{await apiPost('/transfers',{from_branch_id:from,to_branch_id:to,items:[{variant_id:variant,qty}]});setVariant('');setQty(1);load()}catch(e:any){setError(e.message)}}
+  const action=async(id:string,name:'ship'|'receive')=>{try{await apiPost(`/transfers/${id}/${name}`,{});load()}catch(e:any){setError(e.message)}}
+  return <div className="space-y-4"><h1 className="text-2xl font-bold">التحويلات بين الفروع</h1><div className="card"><h2 className="font-bold mb-3">تحويل جديد</h2><div className="grid grid-cols-1 md:grid-cols-4 gap-2"><select className="select" value={from} onChange={e=>setFrom(e.target.value)}><option value="">من فرع</option>{branches.map(b=><option key={b.id} value={b.id}>{b.name_ar}</option>)}</select><select className="select" value={to} onChange={e=>setTo(e.target.value)}><option value="">إلى فرع</option>{branches.filter(b=>b.id!==from).map(b=><option key={b.id} value={b.id}>{b.name_ar}</option>)}</select><select className="select" value={variant} onChange={e=>setVariant(e.target.value)}><option value="">اختر المنتج</option>{products.map(p=><option key={p.id} value={p.id}>{p.sku} – {p.product?.name_ar||p.product?.name_en}</option>)}</select><input className="input" type="number" min="1" value={qty} onChange={e=>setQty(Number(e.target.value))}/></div><button className="btn-accent mt-3" disabled={!from||!to||!variant||qty<1} onClick={create}>إنشاء التحويل</button>{error&&<div className="text-red-700 mt-2">{error}</div>}</div><div className="card overflow-auto"><table><thead><tr><th>الرقم</th><th>من</th><th>إلى</th><th>الأصناف</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody>{rows.map(t=><tr key={t.id}><td>{t.transfer_number}</td><td>{t.from_branch?.name_ar}</td><td>{t.to_branch?.name_ar}</td><td>{t.items?.reduce((s:number,i:any)=>s+i.qty,0)||0}</td><td>{t.status}</td><td>{t.status==='pending'&&<button className="btn" onClick={()=>action(t.id,'ship')}>شحن</button>}{t.status==='shipped'&&<button className="btn-accent" onClick={()=>action(t.id,'receive')}>استلام</button>}</td></tr>)}{!rows.length&&<tr><td colSpan={6} className="text-center text-gray-500 py-8">لا توجد تحويلات</td></tr>}</tbody></table></div></div>
 }

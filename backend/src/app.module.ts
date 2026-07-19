@@ -19,6 +19,7 @@ import { ShiftsModule } from './shifts/shifts.module';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
+import { TerminalsModule } from './terminals/terminals.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { RolesGuard } from './auth/roles.guard';
     NotificationsModule,
     SyncModule,
     ShiftsModule,
+    TerminalsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

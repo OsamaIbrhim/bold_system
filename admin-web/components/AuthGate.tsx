@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
+import { apiGet } from '@/lib/api'
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -13,7 +14,11 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
       setReady(false)
       return
     }
-    setReady(true)
+    apiGet('/auth/me').then((user) => {
+      localStorage.setItem('user', JSON.stringify(user))
+      window.dispatchEvent(new Event('bold-user-updated'))
+      setReady(true)
+    }).catch(() => setReady(true))
   }, [pathname, router])
   return ready ? children : null
 }

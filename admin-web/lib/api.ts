@@ -85,6 +85,29 @@ export async function apiDelete(path: string) {
   return handleResponse(await authorizedFetch(path, { method: 'DELETE' }), path)
 }
 
+export async function apiGetBlob(path: string) {
+  const response = await authorizedFetch(path)
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText)
+    throw new Error(message || `HTTP ${response.status} – ${path}`)
+  }
+  return response.blob()
+}
+
+export type AdminUser = {
+  id: string
+  name: string
+  role: string
+  branch_id: string | null
+  capabilities?: string[]
+}
+
+export function getStoredUser(): AdminUser | null {
+  if (typeof window === 'undefined') return null
+  try { return JSON.parse(localStorage.getItem('user') || 'null') }
+  catch { return null }
+}
+
 export async function apiLogout() {
   const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refresh_token') : null
   if (refreshToken) {

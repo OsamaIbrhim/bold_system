@@ -51,6 +51,12 @@ The current codebase includes the following safeguards:
 - Financial reports account for completed returns and exclude VAT from profit.
 - The POS commits a local sale, its outbox command, and its local stock change
   in one SQLite transaction.
+- Admin product and sales lists load automatically and use server-side pages of
+  20 records instead of unbounded browser-side lists.
+- POS terminals register a stable local device ID, publish heartbeat and sync
+  state, and can be monitored or revoked from Admin.
+- Receipt printing is isolated from sale persistence: cancelling or failing a
+  print cannot undo, duplicate, or crash a completed local sale.
 - CI validates the Prisma schema, runs backend tests, builds all applications,
   and blocks high-severity dependency advisories.
 
@@ -85,6 +91,8 @@ the system into microservices at its current scale.
 | Current server stock | PostgreSQL `InventoryStock` |
 | Unsynchronized cashier sales | POS SQLite outbox |
 | POS product/price/stock cache | POS SQLite snapshot |
+| POS identity and last reported state | PostgreSQL `PosTerminal` |
+| POS last successful local synchronization | POS SQLite `sync_meta` |
 
 The POS cache is not authoritative. The server re-prices and re-validates every
 uploaded sale.
@@ -246,6 +254,7 @@ For hosted PostgreSQL using a pooler, point `DATABASE_URL` at the pooler and
 | --- | --- | --- |
 | `JWT_EXPIRES` | `15m` | Value supported by the JWT library, such as `15m` or `1h` |
 | `REFRESH_EXPIRES` | `30d` | Integer followed by `m`, `h`, or `d` |
+| `POS_ONLINE_THRESHOLD_MS` | `90000` | Time without a heartbeat before Admin derives a terminal as offline |
 
 Do not make access tokens long lived to compensate for UI problems. The Admin
 and POS applications automatically rotate refresh tokens after a `401`.
@@ -325,6 +334,10 @@ than assigning it to arbitrary branches. Before production migration, check for:
 - Multiple open shifts for the same branch.
 - Duplicate pending offer suggestions for the same branch and variant.
 - User references that point to deleted users.
+
+The terminal-observability migration creates `PosTerminal` and restores the
+`SalesInvoice(branch_id, created_at)` index used by the paginated Admin invoice
+query. It does not rewrite existing invoice or stock data.
 
 Always rehearse migrations against a recent restored production backup first.
 
@@ -407,7 +420,7 @@ directory. Preserve that file when troubleshooting unsynchronized sales.
 
 ### Session behavior
 
-1. Login verifies an active user with Argon2.
+1. Login verifies an active user with bcrypt.
 2. The API returns a short-lived JWT access token and a random refresh token.
 3. Only the refresh-token SHA-256 hash is stored in PostgreSQL.
 4. Refreshing revokes the presented token and creates a new token in one
@@ -433,6 +446,10 @@ directory. Preserve that file when troubleshooting unsynchronized sales.
 
 The API remains the authority even if a client hides a button. Never rely on
 frontend visibility for authorization.
+
+`GET /auth/me` returns the current user and effective capability list. Admin
+uses that list to build its navigation. The owner receives every Admin
+capability; branch-scoped roles see only the applicable operational sections.
 
 ## Core business workflows
 
@@ -530,6 +547,8 @@ The Electron main process maintains:
 - `stock`: cached branch quantities.
 - `sales_local`: local receipts keyed by `sync_id`.
 - `outbox`: commands waiting to reach the API.
+- `sync_meta`: stable device ID, terminal name, last successful sync, state,
+  and latest error.
 
 ### Offline sale guarantees
 
@@ -542,12 +561,28 @@ The Electron main process maintains:
 
 ### Current synchronization model
 
+The POS synchronizes immediately after login, every 15 seconds thereafter,
+when the operating system reports that connectivity returned, and on demand
+through **Sync now**. Each cycle publishes a heartbeat, uploads pending sales,
+pulls a snapshot only after every upload succeeds, saves the server timestamp,
+and publishes the final state and pending count.
+
+The status badge therefore represents real API reachability rather than only
+the browser network flag. Admin derives online state from `last_seen_at`; the
+default threshold is 90 seconds and can be changed with
+`POS_ONLINE_THRESHOLD_MS`.
+
 `GET /sync/pull` intentionally returns a full branch snapshot. It does not
 pretend to be incremental because the current product, pricing, and stock
 tables do not all have a reliable change cursor.
 
 `POST /sync/push` returns `501 Not Implemented`. Sales are uploaded through the
 idempotent `/pos/sale` command endpoint.
+
+Receipt printing runs after the local sale transaction. A cancelled or failed
+print reports **sale saved, printing failed** and the `sync_id`; it does not
+roll back the sale. Do not enter that transaction again—check its outbox or
+the central invoice list and reprint instead.
 
 If a pending sale is permanently rejected by the server, preserve the POS
 SQLite database and investigate before attempting manual edits. The current UI
@@ -596,6 +631,38 @@ curl -X POST http://localhost:3000/api/v1/pos/sale \
     "payment_method":"cash",
     "language":"ar"
   }'
+```
+
+### List Admin products and invoices
+
+```bash
+curl 'http://localhost:3000/api/v1/products?q=&page=1&page_size=20' \
+  -H "Authorization: Bearer $TOKEN"
+
+curl 'http://localhost:3000/api/v1/sales?page=1&page_size=20&from=2026-07-01&to=2026-07-31' \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+`/products/search` remains a backward-compatible maximum-20-result lookup for
+installed POS clients. Admin uses the paginated `/products` endpoint.
+
+### Publish and inspect terminal status
+
+```bash
+curl -X POST http://localhost:3000/api/v1/terminals/heartbeat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "device_id":"11111111-1111-4111-8111-111111111111",
+    "name":"Main till 1",
+    "app_version":"1.0.0",
+    "sync_status":"success",
+    "last_sync_at":"2026-07-19T18:00:00.000Z",
+    "pending_count":0
+  }'
+
+curl http://localhost:3000/api/v1/terminals \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Look up an invoice for return
@@ -666,7 +733,21 @@ npm run build
 The current suite covers authentication refresh rotation, role enforcement,
 server-authoritative sales, insufficient and reserved stock, return fraud and
 quantity controls, Arabic invoice PDFs, pricing-rule selection, transactional
-purchasing, transfer transitions, and shift cash calculations.
+purchasing, transfer transitions, shift cash calculations, invoice/product
+pagination, terminal registration, revocation, and online-state derivation.
+
+### POS synchronization tests
+
+```bash
+cd pos-electron
+npm ci
+npm test
+npm run build
+```
+
+These tests verify upload-before-pull ordering, successful timestamp updates,
+outbox acknowledgement, and the fail-closed rule that a rejected sale prevents
+a stock snapshot from overwriting local state.
 
 ### Schema validation
 
@@ -711,7 +792,7 @@ critical advisories.
 
 1. Installs each application from its lockfile with `npm ci`.
 2. Validates the Prisma schema.
-3. Runs all backend tests.
+3. Runs backend tests and POS synchronization tests.
 4. Builds the API, Admin, and POS applications.
 5. Runs high-severity dependency audit gates.
 
@@ -743,8 +824,10 @@ critical advisories.
 6. Start the API and verify health through Swagger/login.
 7. Build and deploy Admin with the correct public API URL.
 8. Test one non-critical POS device before broad rollout.
-9. Confirm pending POS outboxes are empty or understood.
-10. End the maintenance window and monitor errors and stock movement.
+9. Confirm the device appears in Admin with the correct branch, heartbeat,
+   version, pending count, and last successful synchronization.
+10. Confirm pending POS outboxes are empty or understood.
+11. End the maintenance window and monitor errors and stock movement.
 
 ### API host
 
@@ -781,6 +864,8 @@ HTTPS URL reachable from cashier/admin networks.
 - Perform the initial online snapshot before allowing offline sales.
 - Verify the configured thermal printer and Windows cash-drawer behavior.
 - Back up or preserve the POS SQLite file whenever an outbox is pending.
+- Opening the POS after login registers the device automatically. Rename or
+  revoke it from Admin → **POS terminals**.
 
 ## Backup and recovery
 
@@ -918,6 +1003,21 @@ destination branch (or be an owner/warehouse manager).
 Run `npm ci` in `backend/`. The Cairo Arabic WOFF font is loaded from the pinned
 `@fontsource/cairo` dependency; there is no separately downloaded TTF file.
 
+### Electron reports `Object has been destroyed`
+
+Install a POS build containing the single-owner print-window lifecycle. Older
+builds printed and closed the receipt window from both renderer JavaScript and
+the Electron callback. The current build prints only from the main process and
+reports printing separately from the saved sale. Before re-entering a sale
+from an older build, check its `sync_id` in the local outbox and Admin invoices.
+
+### POS is online but Admin shows it offline
+
+Confirm the POS can reach `/api/v1/terminals/heartbeat`, its user is assigned
+to the expected branch, and the terminal has not been revoked. The default
+online window is 90 seconds; configure `POS_ONLINE_THRESHOLD_MS` on the API to
+change it.
+
 ### Migration fails on a constraint or unique index
 
 Do not edit the migration or assign arbitrary replacement data. Restore a copy
@@ -940,8 +1040,9 @@ The following work is still required or intentionally incomplete:
    and an audit entry but does not publish a dated fixed-price promotion.
 5. **Exchange workflow is absent.** The POS supports linked returns, not a
    combined return-and-replacement transaction.
-6. **Several Admin surfaces remain minimal.** Sales history, purchase receiving,
-   shifts, settings, and reconciliation need complete operator interfaces.
+6. **Advanced reconciliation remains absent.** Admin now covers sales history,
+   purchase receiving, shifts, roles, branches, and terminals, but there is no
+   dedicated inventory variance/reconciliation workflow yet.
 7. **OCR import is a stub.** Supplier invoice OCR returns a draft placeholder.
 8. **Notifications require external verification.** Email and WhatsApp code is
    present but depends on real provider credentials and has not been validated
@@ -949,9 +1050,10 @@ The following work is still required or intentionally incomplete:
 9. **Client token storage needs hardening.** Admin and POS currently keep refresh
    tokens in renderer/browser local storage. Production should use HttpOnly
    cookies for Admin and Electron `safeStorage` or an OS keychain for POS.
-10. **No device enrollment model.** The system has users and branches but no
-    registered till/device identity, certificate, remote revocation, or POS
-    configuration policy.
+10. **Terminal enrollment is authenticated but not certificate-bound.** Devices
+    have stable IDs, branch ownership, heartbeat, and remote revocation, but a
+    production rollout should add an owner-issued enrollment secret or device
+    certificate and store credentials with Electron `safeStorage`.
 11. **No login rate limiter or MFA.** Add rate limiting, monitoring, lockout
     policy, and preferably MFA for owner accounts before public exposure.
 12. **Money handling is mixed.** Purchasing and shifts use Prisma Decimal, while

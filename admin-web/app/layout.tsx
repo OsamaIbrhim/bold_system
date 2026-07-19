@@ -10,7 +10,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AuthGate>
           <div className="flex">
             <Sidebar />
-            <main className="flex-1 p-6 max-w-7xl">{children}</main>
+            <main className="flex-1 min-w-0 p-4 md:p-6">{children}</main>
           </div>
         </AuthGate>
         <Toaster richColors position="top-center" />

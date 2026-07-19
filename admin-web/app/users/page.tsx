@@ -1,0 +1,14 @@
+'use client'
+import { useEffect, useState } from 'react'
+import { apiGet, apiPost } from '@/lib/api'
+
+const roleNames:any={owner:'مالك',branch_manager:'مدير فرع',cashier:'كاشير',warehouse_manager:'مدير مخزن'}
+export default function Users(){
+  const [items,setItems]=useState<any[]>([]), [branches,setBranches]=useState<any[]>([]), [error,setError]=useState('')
+  const [name,setName]=useState(''),[phone,setPhone]=useState(''),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[role,setRole]=useState('cashier'),[branch,setBranch]=useState('')
+  const load=()=>Promise.all([apiGet('/users'),apiGet('/branches')]).then(([u,b])=>{setItems(u);setBranches(b)}).catch((e:any)=>setError(e.message))
+  useEffect(()=>{load()},[])
+  const create=async()=>{try{await apiPost('/users',{name,phone:phone||undefined,email:email||undefined,password,role,branch_id:branch||undefined});setName('');setPhone('');setEmail('');setPassword('');load()}catch(e:any){setError(e.message)}}
+  return <div className="space-y-4"><h1 className="text-2xl font-bold">المستخدمون والصلاحيات</h1><div className="card"><h2 className="font-bold mb-3">مستخدم جديد</h2><div className="grid grid-cols-1 md:grid-cols-3 gap-2"><input className="input" placeholder="الاسم *" value={name} onChange={e=>setName(e.target.value)}/><input className="input" placeholder="+201xxxxxxxxx" value={phone} onChange={e=>setPhone(e.target.value)}/><input className="input" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)}/><input className="input" type="password" placeholder="كلمة مرور 8 أحرف على الأقل" value={password} onChange={e=>setPassword(e.target.value)}/><select className="select" value={role} onChange={e=>setRole(e.target.value)}>{Object.entries(roleNames).map(([v,n])=><option key={v} value={v}>{String(n)}</option>)}</select><select className="select" value={branch} onChange={e=>setBranch(e.target.value)}><option value="">بدون فرع</option>{branches.map(b=><option key={b.id} value={b.id}>{b.name_ar}</option>)}</select></div><button className="btn-accent mt-3" disabled={!name||password.length<8} onClick={create}>إنشاء المستخدم</button>{error&&<div className="text-red-700 mt-2">{error}</div>}</div>
+    <div className="card overflow-auto"><table><thead><tr><th>الاسم</th><th>الهاتف</th><th>البريد</th><th>الدور</th><th>الفرع</th><th>الحالة</th></tr></thead><tbody>{items.map(u=><tr key={u.id}><td>{u.name}</td><td>{u.phone||'—'}</td><td>{u.email||'—'}</td><td>{roleNames[u.role]||u.role}</td><td>{branches.find(b=>b.id===u.branch_id)?.name_ar||'كل الفروع / غير محدد'}</td><td>{u.is_active?'نشط':'معطل'}</td></tr>)}</tbody></table></div></div>
+}

@@ -1,26 +1,9 @@
 'use client'
-import { useState } from 'react'
-import { apiPost } from '@/lib/api'
+import { useEffect, useState } from 'react'
+import { apiGet, apiPost } from '@/lib/api'
 export default function Pricing(){
-  const [variant,setVariant] = useState('')
-  const [res,setRes] = useState<any>(null)
-  const calc = async ()=> { const r = await apiPost('/pricing/calculate', { variant_id: variant }); setRes(r) }
-  return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">محرك التسعير</h1>
-      <div className="card">
-        <div className="flex gap-2 mb-3">
-          <input className="input" placeholder="Variant UUID" value={variant} onChange={e=>setVariant(e.target.value)} />
-          <button className="btn" onClick={calc}>احسب</button>
-        </div>
-        {res && <div className="space-y-1 text-sm">
-          <div>التكلفة: {res.cost} ج</div>
-          <div>Overhead: {res.overhead_percent}% – Profit: {res.profit_percent}% – Tax: {res.tax_percent}%</div>
-          <div className="text-lg font-bold">سعر البيع: {res.selling_price} ج</div>
-          <div className="text-amber-700">الحد الأدنى المسموح: {res.min_allowed_price} ج (تكلفة + Overhead محمي)</div>
-        </div>}
-      </div>
-      <div className="card text-sm text-gray-600">صيغة مركبة قابلة للتعديل. قواعد: Global → Category → Brand → Product → Variant. تجاوز يدوي = Admin فقط مع audit log.</div>
-    </div>
-  )
+  const [variant,setVariant]=useState(''),[products,setProducts]=useState<any[]>([]),[res,setRes]=useState<any>(null),[error,setError]=useState('')
+  useEffect(()=>{apiGet('/products?page=1&page_size=100').then(r=>setProducts(r.items||[])).catch((e:any)=>setError(e.message))},[])
+  const calc=async()=>{try{setRes(await apiPost('/pricing/calculate',{variant_id:variant}));setError('')}catch(e:any){setError(e.message)}}
+  return <div className="space-y-4"><h1 className="text-2xl font-bold">محرك التسعير</h1><div className="card"><div className="flex gap-2 mb-3"><select className="select" value={variant} onChange={e=>setVariant(e.target.value)}><option value="">اختر المنتج / SKU</option>{products.map(p=><option key={p.id} value={p.id}>{p.sku} – {p.product?.name_ar||p.product?.name_en}</option>)}</select><button className="btn" disabled={!variant} onClick={calc}>احسب</button></div>{error&&<div className="text-red-700">{error}</div>}{res&&<div className="grid grid-cols-2 md:grid-cols-4 gap-3"><div><span className="text-gray-500 text-sm">التكلفة</span><div className="font-bold">{res.cost} ج</div></div><div><span className="text-gray-500 text-sm">Overhead / Profit / Tax</span><div>{res.overhead_percent}% / {res.profit_percent}% / {res.tax_percent}%</div></div><div><span className="text-gray-500 text-sm">سعر البيع</span><div className="text-xl font-bold">{res.selling_price} ج</div></div><div><span className="text-gray-500 text-sm">الحد الأدنى</span><div className="text-amber-700 font-bold">{res.min_allowed_price} ج</div></div></div>}</div><div className="card text-sm text-gray-600">الأولوية: Global ← Category ← Brand ← Product ← Variant. السعر النهائي يحسب في الخادم، ولا يعتمد على سعر يرسله POS.</div></div>
 }

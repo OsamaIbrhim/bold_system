@@ -17,3 +17,7 @@ body { margin:0; background:#f7f7f7; direction: rtl; }
 .small { color:#555; font-size:13px }
 input, button { font-family: inherit; }
 .badge { background:#eef; padding:2px 8px; border-radius:6px; font-size:12px }
+.sync-summary { display:flex; align-items:center; gap:8px; background:#fff; border:1px solid #ddd; border-radius:10px; padding:6px 10px; min-width:260px; }
+.sync-indicator { width:10px; height:10px; border-radius:999px; flex:0 0 auto; }
+.sync-summary b { font-size:13px; }
+.sync-summary .small { font-size:11px; }

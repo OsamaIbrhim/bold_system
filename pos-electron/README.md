@@ -1,39 +1,42 @@
 # Bold POS – Electron
 
-Offline-first cashier app for Bold Men's Clothing.
+Offline-first cashier app built with React, Vite, Electron, and a local sql.js
+database. See the repository [full installation and operations guide](../README.md)
+for API/database setup, deployment, recovery, and security guidance.
 
-- React + Vite + Electron 31
-- Local SQLite: products, stock, outbox
-- Barcode scanner (USB HID keyboard) – auto-focus input
-- Cart, Customer phone, Payments: نقدي / فيزا / انستا باي / فودافون كاش / تقسيط
-- Sale saved locally with sync_id, auto-sync every 15s when online
-- Cashier login with rotating refresh sessions and server-derived branch identity
-- Online original-invoice returns with remaining-quantity enforcement
-- Print AR/EN – ESC/POS stub ready
-- RTL Arabic UI, product names in English
+## Behavior
+
+- Sales, local stock changes, and outbox commands commit in one transaction.
+- Pending sales upload before a new product/price/stock snapshot is accepted.
+- Automatic synchronization runs at login, every 15 seconds, and after network
+  reconnection; operators can also select **Sync now**.
+- The header shows real API online/offline state, last successful sync, pending
+  sale count, and the last error.
+- A stable device ID registers through authenticated heartbeats so Admin can
+  display, rename, monitor, or revoke the terminal.
+- Printing uses a main-process-owned window lifecycle. Print cancellation is
+  reported separately and cannot undo or duplicate a saved sale.
 
 ## Run
-```
-npm install
-npm run dev
-# in second terminal:
-npx electron .
+
+```bash
+npm ci
+npm run dev:electron
 ```
 
-## Config
-The cashier signs in inside the app. To point a development build at another API,
-open DevTools Console once and set:
-```
+For a different development API, set this once in DevTools and restart:
+
+```js
 localStorage.setItem('bold_api', 'http://localhost:3000/api/v1')
 ```
 
-The app will pull products/stock from `/sync/pull` and push sales to `/pos/sale`.
+## Test and build
 
-Offline: sales are committed to the outbox and local stock in one SQLite
-transaction. Reconnect uploads pending sales before accepting a fresh stock snapshot.
-
-Build installer:
-```
+```bash
+npm test
 npm run build
-npx electron-builder
+npm run dist   # Windows NSIS installer
 ```
+
+Preserve Electron's `bold_pos.sqlite` file whenever pending outbox sales exist.
+Never re-enter a sale after a print error until its `sync_id` is checked.

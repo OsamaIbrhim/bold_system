@@ -1,36 +1,34 @@
 # Bold Admin – Next.js
 
-Admin dashboard for Bold POS – Arabic RTL
+Arabic RTL administration application for Bold POS. See the repository
+[full installation and operations guide](../README.md) for database migrations,
+deployment, recovery, security, and troubleshooting.
 
-- Next.js 15 App Router
-- Tailwind + RTL
-- TanStack Query ready
-- API: http://localhost:3000/api/v1
+## Run
 
-Pages:
-- /login – JWT login with rotating refresh sessions
-- / – Dashboard
-- /products – Barcode search
-- /inventory – Branch stock lookup
-- /sales – Sales / Returns info
-- /customers – Loyalty lookup
-- /pricing – Pricing engine calculator
-- /offers – Slow-stock suggestions
-- /transfers – Branch transfers
-- /reports – Sales / Profit
-- /settings – System settings
-
-Run:
-```
-npm install
-npm run dev
-# http://localhost:3001
-# Development seed login: +200100000000 / Bold1234
-```
-
-Set API endpoint:
-```
+```bash
+npm ci
 NEXT_PUBLIC_API=http://localhost:3000/api/v1 npm run dev
 ```
 
-UI is Arabic-first, product names are shown in English, and invoices support AR/EN output.
+Open `http://localhost:3001`. Development seed owner credentials are documented
+in the root guide.
+
+## Implemented pages
+
+- Dashboard and reports.
+- Paginated products (20 per page) and branch inventory.
+- Paginated sales invoices, invoice detail, PDF, and return history.
+- Customers, suppliers, purchasing, pricing, offers, and transfers.
+- Branches, users/roles, shifts, registered POS terminals, and settings.
+
+Navigation is built from the capabilities returned by `/auth/me`. Backend role
+and branch guards remain authoritative. Invoice data is read directly from the
+central database and refreshed every 30 seconds; terminal state refreshes every
+20 seconds.
+
+## Verify
+
+```bash
+npm run build
+```

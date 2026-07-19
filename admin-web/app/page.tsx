@@ -4,9 +4,11 @@ import { apiGet } from '@/lib/api'
 
 export default function Dashboard(){
   const [stats, setStats] = useState({ total_sales:0, profit:0, count:0 })
+  const [productCount, setProductCount] = useState(0)
   useEffect(() => {
     const today = new Date().toISOString().slice(0,10)
     apiGet(`/reports/sales?from=${today}&to=${today}`).then(setStats).catch(() => undefined)
+    apiGet('/products?page=1&page_size=1').then(result => setProductCount(result.total || 0)).catch(() => undefined)
   }, [])
   return (
     <div className="space-y-6">
@@ -15,7 +17,7 @@ export default function Dashboard(){
         <div className="card"><div className="text-sm text-gray-500">مبيعات اليوم</div><div className="text-2xl font-bold">{stats.total_sales || 0} ج</div></div>
         <div className="card"><div className="text-sm text-gray-500">الربح</div><div className="text-2xl font-bold">{stats.profit || 0} ج</div></div>
         <div className="card"><div className="text-sm text-gray-500">عدد الفواتير</div><div className="text-2xl font-bold">{stats.count || 0}</div></div>
-        <div className="card"><div className="text-sm text-gray-500">المخزون البطئ</div><div className="text-2xl font-bold">—</div></div>
+        <div className="card"><div className="text-sm text-gray-500">منتجات الكتالوج</div><div className="text-2xl font-bold">{productCount}</div></div>
       </div>
       <div className="card">
         <h2 className="font-bold mb-3">روابط سريعة</h2>

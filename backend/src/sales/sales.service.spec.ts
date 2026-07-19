@@ -11,6 +11,22 @@ describe('SalesService', () => {
     language: 'ar',
   };
 
+  it('lists invoices in pages and applies the caller branch scope', async () => {
+    const prisma = {
+      salesInvoice: {
+        count: jest.fn().mockReturnValue('count-query'),
+        findMany: jest.fn().mockReturnValue('items-query'),
+      },
+      $transaction: jest.fn().mockResolvedValue([21, [{ id: 'sale-1' }]]),
+    };
+    const service = new SalesService(prisma as any, {} as any);
+    const result = await service.listSales({ q:'', page:2, page_size:20 } as any, 'branch-1');
+    expect(prisma.salesInvoice.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { branch_id:'branch-1' }, skip:20, take:20,
+    }));
+    expect(result).toMatchObject({ total:21, total_pages:2, page:2 });
+  });
+
   function setup(stockCount = 1) {
     const tx = {
       branch: { findFirst: jest.fn().mockResolvedValue({ id: 'branch-1', code: 'BOLD-01' }) },

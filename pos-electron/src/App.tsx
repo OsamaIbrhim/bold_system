@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { startSync } from './sync'
+import { startSync, syncLoop, SyncState } from './sync'
 import { api } from './api'
 // @ts-ignore
 const bold = (window as any).bold
@@ -48,6 +48,9 @@ export default function App() {
   const [loyalty, setLoyalty] = useState<any>(null)
   const [authenticated, setAuthenticated] = useState(api.hasSession())
   const [branchId, setBranchId] = useState(authenticated ? localStorage.getItem('branch_id') || '' : '')
+  const [syncState, setSyncState] = useState<SyncState>({
+    device_id:'', terminal_name:'', app_version:'', sync_status:'never', last_sync_at:null, last_error:null, pending_count:0,
+  })
   const barcodeRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -59,7 +62,7 @@ export default function App() {
   useEffect(()=>{
     if (!authenticated || !branchId) return
     barcodeRef.current?.focus()
-    return startSync(branchId)
+    return startSync(branchId, setSyncState)
   }, [authenticated, branchId])
 
   // Customer loyalty lookup – debounced
@@ -121,15 +124,25 @@ export default function App() {
       // Used only by the local Electron database and stripped before sync.
       local_total: total
     }
+    let res: any
     try {
-      const res = await bold.sale(payload)
-      await bold.print({ invoice_number: 'POS-'+Date.now(), total, items: cart }, 'ar')
-      alert('تم البيع ✓  Sync: ' + res.sync_id)
-      setCart([])
-      barcodeRef.current?.focus()
+      res = await bold.sale(payload)
     } catch (error: any) {
       alert('تعذر إتمام البيع: ' + (error.message || 'المخزون المحلي غير كافٍ'))
+      return
     }
+    const receipt = { invoice_number: 'POS-'+res.sync_id.slice(0,8), total, items: cart }
+    setCart([])
+    setCustomerPhone('')
+    barcodeRef.current?.focus()
+    const syncPromise = syncLoop(branchId, setSyncState)
+    const printResult = await bold.print(receipt, 'ar').catch((error:any)=>({ok:false,reason:error.message}))
+    if (!printResult?.ok) {
+      alert(`تم حفظ البيع ✓\nتعذرت طباعة الإيصال: ${printResult?.reason || 'تم إلغاء الطباعة'}\nلا تعِد إدخال البيع. رقم المزامنة: ${res.sync_id}`)
+    } else {
+      alert(`تم حفظ البيع وطباعة الإيصال ✓\nرقم المزامنة: ${res.sync_id}`)
+    }
+    syncPromise.catch(()=>undefined)
   }
 
   const doReturn = async () => {
@@ -162,13 +175,20 @@ export default function App() {
     return <LoginScreen onLogin={(id) => { setBranchId(id); setAuthenticated(true) }} />
   }
 
+  const syncLabel = syncState.sync_status === 'success' ? 'متصل' : syncState.sync_status === 'syncing' ? 'جارٍ المزامنة' : syncState.sync_status === 'error' ? 'خطأ مزامنة' : syncState.sync_status === 'offline' ? 'غير متصل' : 'لم تتم المزامنة'
+  const syncColor = syncState.sync_status === 'success' ? '#15803d' : syncState.sync_status === 'syncing' ? '#b45309' : '#b91c1c'
+
   return (
     <div className="pos">
       <div className="left">
         <div style={{display:'flex', gap:12, alignItems:'center'}}>
           <h2 style={{margin:0}}>Bold POS – نقطة بيع</h2>
           <span className="badge">فرع: {branchId || 'غير محدد'}</span>
-          <span className="small" style={{marginRight:'auto'}}>Offline-First</span>
+          <div className="sync-summary" style={{marginRight:'auto'}} title={syncState.last_error || ''}>
+            <span className="sync-indicator" style={{background:syncColor}} />
+            <div><b>{syncLabel}</b><div className="small">آخر مزامنة: {syncState.last_sync_at ? new Date(syncState.last_sync_at).toLocaleString('ar-EG') : 'لم تتم'} · معلق: {syncState.pending_count}</div></div>
+          </div>
+          <button disabled={syncState.sync_status==='syncing'} onClick={()=>syncLoop(branchId,setSyncState)}>مزامنة الآن</button>
           <button onClick={async()=>{ await api.logout(); setAuthenticated(false); setBranchId('') }}>خروج</button>
         </div>
         <input
