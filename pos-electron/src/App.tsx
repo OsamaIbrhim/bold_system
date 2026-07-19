@@ -1,25 +1,61 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { startSync, syncLoop, SyncState } from './sync'
-import { api } from './api'
+import { api, ApiError } from './api'
 // @ts-ignore
 const bold = (window as any).bold
 
 type CartItem = { variant_id: string, sku: string, name: string, qty: number, unit_price: number, unit_tax: number }
+const toCents = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100)
+const fromCents = (value: number) => value / 100
+
+function EnrollmentScreen({ onEnrolled }: { onEnrolled: (branchId: string, terminalCode: string) => void }) {
+  const [code, setCode] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault(); setError('')
+    if (code.trim().length !== 12) { setError('رمز التسجيل يتكون من 12 حرفاً. أنشئ رمزاً جديداً من لوحة الإدارة.'); return }
+    setLoading(true)
+    try {
+      const terminal = await bold.sync_get_status()
+      const enrolled = await api.enroll(code, terminal)
+      onEnrolled(enrolled.branch_id, enrolled.terminal_code)
+    } catch (err: any) {
+      const message = err instanceof ApiError ? err.message : 'تعذر تسجيل الجهاز'
+      setError(`${message}${err?.requestId ? ` — المرجع: ${err.requestId}` : ''}`)
+    } finally { setLoading(false) }
+  }
+  return <div className="pos" style={{display:'grid',placeItems:'center'}}>
+    <form onSubmit={submit} style={{width:430,background:'#fff',borderRadius:16,padding:28,boxShadow:'0 12px 40px #0002'}}>
+      <h1 style={{marginTop:0}}>إعداد جهاز Bold POS</h1>
+      <p className="small" style={{lineHeight:1.7}}>هذا الجهاز غير مسجل. اطلب من مدير الفرع إنشاء رمز من صفحة <b>أجهزة نقاط البيع</b> في لوحة الإدارة. التسجيل الأول يتطلب اتصالاً بالإنترنت.</p>
+      <label htmlFor="enrollment-code">رمز تسجيل الجهاز</label>
+      <input id="enrollment-code" className="barcode-input" style={{fontSize:22,letterSpacing:3,margin:'6px 0 14px',direction:'ltr'}} value={code} onChange={event=>setCode(event.target.value.toUpperCase().replace(/\s/g,'').slice(0,12))} placeholder="XXXXXXXXXXXX" autoFocus />
+      {error&&<div style={{color:'#b91c1c',marginBottom:12}} role="alert">{error}</div>}
+      <button className="pay-btn accent" style={{width:'100%'}} disabled={loading}>{loading?'جارٍ تسجيل الجهاز…':'تسجيل الجهاز'}</button>
+    </form>
+  </div>
+}
 
 function LoginScreen({ onLogin }: { onLogin: (branchId: string) => void }) {
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [field, setField] = useState('')
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    const normalizedPhone = phone.trim().replace(/\s+/g, '')
+    if (!normalizedPhone) { setField('phone'); setError('أدخل رقم الهاتف المسجل لحساب الكاشير.'); return }
+    if (password.length < 8) { setField('password'); setError('كلمة المرور يجب أن تتكون من 8 أحرف على الأقل.'); return }
     setLoading(true)
-    setError('')
+    setError(''); setField('')
     try {
-      const session = await api.login(phone, password)
+      const session = await api.login(normalizedPhone, password)
       onLogin(session.user.branch_id!)
     } catch (err: any) {
-      setError(err.message || 'تعذر تسجيل الدخول')
+      setField(err?.field || '')
+      setError(`${err.message || 'تعذر تسجيل الدخول'}${err?.requestId ? ` — المرجع: ${err.requestId}` : ''}`)
     } finally {
       setLoading(false)
     }
@@ -30,10 +66,10 @@ function LoginScreen({ onLogin }: { onLogin: (branchId: string) => void }) {
         <h1 style={{marginTop:0}}>Bold POS</h1>
         <p className="small">سجل الدخول بحساب الكاشير المرتبط بهذا الفرع.</p>
         <label>رقم الهاتف</label>
-        <input className="barcode-input" style={{fontSize:18, margin:'6px 0 14px'}} value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+201xxxxxxxxx" autoFocus />
+        <input className="barcode-input" style={{fontSize:18, margin:'6px 0 14px', borderColor:field==='phone'?'#b91c1c':undefined}} value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+201xxxxxxxxx" autoFocus aria-invalid={field==='phone'} />
         <label>كلمة المرور</label>
-        <input className="barcode-input" style={{fontSize:18, margin:'6px 0 14px'}} type="password" value={password} onChange={e=>setPassword(e.target.value)} />
-        {error && <div style={{color:'#b91c1c', marginBottom:12}}>{error}</div>}
+        <input className="barcode-input" style={{fontSize:18, margin:'6px 0 14px', borderColor:field==='password'?'#b91c1c':undefined}} type="password" value={password} onChange={e=>setPassword(e.target.value)} aria-invalid={field==='password'} />
+        {error && <div style={{color:'#b91c1c', marginBottom:12}} role="alert">{error}</div>}
         <button className="pay-btn accent" style={{width:'100%'}} disabled={loading}>{loading ? 'جارٍ الدخول…' : 'دخول'}</button>
       </form>
     </div>
@@ -46,17 +82,33 @@ export default function App() {
   const [customerPhone, setCustomerPhone] = useState('')
   const [customerInfo, setCustomerInfo] = useState<any>(null)
   const [loyalty, setLoyalty] = useState<any>(null)
-  const [authenticated, setAuthenticated] = useState(api.hasSession())
-  const [branchId, setBranchId] = useState(authenticated ? localStorage.getItem('branch_id') || '' : '')
+  const [booting, setBooting] = useState(true)
+  const [enrolled, setEnrolled] = useState(false)
+  const [authenticated, setAuthenticated] = useState(false)
+  const [branchId, setBranchId] = useState('')
+  const [terminalCode, setTerminalCode] = useState('')
   const [syncState, setSyncState] = useState<SyncState>({
     device_id:'', terminal_name:'', app_version:'', sync_status:'never', last_sync_at:null, last_error:null, pending_count:0,
   })
   const barcodeRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    const expired = () => { setAuthenticated(false); setBranchId('') }
+    api.bootstrap().then(({device,user}) => {
+      setEnrolled(!!device)
+      setTerminalCode(device?.terminal_code || '')
+      setBranchId(device?.branch_id || '')
+      setAuthenticated(!!user)
+    }).catch((error:any) => {
+      alert('تعذر قراءة بيانات الجهاز الآمنة: ' + (error.message || error))
+    }).finally(() => setBooting(false))
+  }, [])
+
+  useEffect(() => {
+    const expired = () => { setAuthenticated(false) }
+    const invalidTerminal = () => { setAuthenticated(false); setEnrolled(false); setBranchId(''); setTerminalCode('') }
     window.addEventListener('bold-auth-expired', expired)
-    return () => window.removeEventListener('bold-auth-expired', expired)
+    window.addEventListener('bold-terminal-invalid', invalidTerminal)
+    return () => { window.removeEventListener('bold-auth-expired', expired); window.removeEventListener('bold-terminal-invalid', invalidTerminal) }
   }, [])
 
   useEffect(()=>{
@@ -106,9 +158,9 @@ export default function App() {
     setTimeout(()=>barcodeRef.current?.focus(), 0)
   }
 
-  const subtotal = cart.reduce((s,i)=> s + i.unit_price * i.qty, 0)
-  const tax = Math.round(cart.reduce((sum, item) => sum + item.unit_tax * item.qty, 0) * 100) / 100
-  const total = Math.round((subtotal + tax) * 100) / 100
+  const subtotal = fromCents(cart.reduce((sum,item)=>sum + toCents(item.unit_price) * item.qty, 0))
+  const tax = fromCents(cart.reduce((sum,item)=>sum + toCents(item.unit_tax) * item.qty, 0))
+  const total = fromCents(toCents(subtotal) + toCents(tax))
 
   const doSale = async (payment_method: string) => {
     if (!cart.length) return
@@ -171,7 +223,13 @@ export default function App() {
     }
   }
 
-  if (!authenticated || !branchId) {
+  if (booting) return <div className="pos" style={{display:'grid',placeItems:'center'}}><h2>جارٍ التحقق من الجهاز والجلسة…</h2></div>
+
+  if (!enrolled || !branchId) {
+    return <EnrollmentScreen onEnrolled={(id,code) => { setBranchId(id); setTerminalCode(code); setEnrolled(true) }} />
+  }
+
+  if (!authenticated) {
     return <LoginScreen onLogin={(id) => { setBranchId(id); setAuthenticated(true) }} />
   }
 
@@ -183,13 +241,13 @@ export default function App() {
       <div className="left">
         <div style={{display:'flex', gap:12, alignItems:'center'}}>
           <h2 style={{margin:0}}>Bold POS – نقطة بيع</h2>
-          <span className="badge">فرع: {branchId || 'غير محدد'}</span>
+          <span className="badge">الجهاز: {terminalCode || 'غير مسجل'}</span>
           <div className="sync-summary" style={{marginRight:'auto'}} title={syncState.last_error || ''}>
             <span className="sync-indicator" style={{background:syncColor}} />
-            <div><b>{syncLabel}</b><div className="small">آخر مزامنة: {syncState.last_sync_at ? new Date(syncState.last_sync_at).toLocaleString('ar-EG') : 'لم تتم'} · معلق: {syncState.pending_count}</div></div>
+            <div><b>{syncLabel}</b><div className="small">آخر مزامنة: {syncState.last_sync_at ? new Date(syncState.last_sync_at).toLocaleString('ar-EG') : 'لم تتم'} · معلق: {syncState.pending_count} · v{syncState.app_version||'—'}</div></div>
           </div>
           <button disabled={syncState.sync_status==='syncing'} onClick={()=>syncLoop(branchId,setSyncState)}>مزامنة الآن</button>
-          <button onClick={async()=>{ await api.logout(); setAuthenticated(false); setBranchId('') }}>خروج</button>
+          <button onClick={async()=>{ await api.logout(); setAuthenticated(false) }}>خروج</button>
         </div>
         <input
           ref={barcodeRef}
@@ -209,8 +267,8 @@ export default function App() {
                   <td>{it.name}</td>
                   <td>{it.sku}</td>
                   <td>{it.qty}</td>
-                  <td>{it.unit_price} ج</td>
-                  <td>{it.unit_price * it.qty} ج</td>
+                  <td>{it.unit_price.toFixed(2)} ج</td>
+                  <td>{fromCents(toCents(it.unit_price) * it.qty).toFixed(2)} ج</td>
                   <td><button onClick={()=>setCart(cart.filter((_,i)=>i!==idx))}>✕</button></td>
                 </tr>
               ))}
@@ -243,9 +301,9 @@ export default function App() {
         </div>
 
         <div className="totals">
-          <div><span>المجموع الفرعي (غير شامل الضريبة)</span><b>{subtotal} ج</b></div>
-          <div><span>ضريبة القيمة المضافة</span><b>{tax} ج</b></div>
-          <div style={{fontSize:22, borderTop:'2px solid #111', paddingTop:8}}><span>الإجمالي شامل الضريبة</span><b>{total} ج</b></div>
+          <div><span>المجموع الفرعي (غير شامل الضريبة)</span><b>{subtotal.toFixed(2)} ج</b></div>
+          <div><span>ضريبة القيمة المضافة</span><b>{tax.toFixed(2)} ج</b></div>
+          <div style={{fontSize:22, borderTop:'2px solid #111', paddingTop:8}}><span>الإجمالي شامل الضريبة</span><b>{total.toFixed(2)} ج</b></div>
         </div>
 
         <div className="pay-grid">

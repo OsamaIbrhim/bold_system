@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res, Header, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res, Header, Headers, Req } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { SalesService } from './sales.service';
 import { InvoicePdfService } from './invoice-pdf.service';
@@ -8,12 +8,14 @@ import { AuthenticatedUser } from '../auth/authenticated-user';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { ListSalesDto } from './dto/list-sales.dto';
 import { resolveBranchScope } from '../auth/branch-access';
+import { TerminalsService } from '../terminals/terminals.service';
 
 @Controller()
 export class SalesController {
   constructor(
     private svc: SalesService,
     private pdfService: InvoicePdfService,
+    private terminals: TerminalsService,
   ) {}
 
   @Roles('owner', 'branch_manager')
@@ -35,24 +37,39 @@ export class SalesController {
     return this.svc.getInvoice(id, req.user);
   }
 
-  @Roles('owner', 'branch_manager', 'cashier')
+  @Roles('branch_manager', 'cashier')
   @Post('pos/sale')
-  sale(@Body() dto: CreateSaleDto, @Req() req: Request & { user: AuthenticatedUser }) {
-    return this.svc.createSale(dto, req.user);
+  async sale(
+    @Body() dto: CreateSaleDto,
+    @Headers('x-pos-device-id') deviceId: string | undefined,
+    @Headers('x-pos-device-token') deviceToken: string | undefined,
+    @Req() req: Request & { user: AuthenticatedUser },
+  ) {
+    const terminal = await this.terminals.authenticate(deviceId, deviceToken, req.user);
+    return this.svc.createSale(dto, req.user, terminal.id);
   }
   @Roles('owner', 'branch_manager', 'cashier')
   @Post('pos/return')
-  ret(@Body() dto: CreateReturnDto, @Req() req: Request & { user: AuthenticatedUser }) {
+  async ret(
+    @Body() dto: CreateReturnDto,
+    @Headers('x-pos-device-id') deviceId: string | undefined,
+    @Headers('x-pos-device-token') deviceToken: string | undefined,
+    @Req() req: Request & { user: AuthenticatedUser },
+  ) {
+    if (req.user.role !== 'owner') await this.terminals.authenticate(deviceId, deviceToken, req.user);
     return this.svc.createReturn(dto, req.user);
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
   @Get('pos/invoices/lookup')
-  lookupInvoice(
+  async lookupInvoice(
     @Query('reference') reference: string,
+    @Headers('x-pos-device-id') deviceId: string | undefined,
+    @Headers('x-pos-device-token') deviceToken: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     if (!reference?.trim()) throw new BadRequestException('reference is required');
+    if (req.user.role !== 'owner') await this.terminals.authenticate(deviceId, deviceToken, req.user);
     return this.svc.findReturnableInvoice(reference.trim(), req.user);
   }
 

@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [master]
+  workflow_dispatch:
+  schedule:
+    - cron: '30 1 * * *'
 
 permissions:
   contents: read
@@ -27,8 +30,7 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: npx prisma validate
-      - run: npm test -- --runInBand
-      - run: npm run build
+      - run: npm run test:soft
       - run: npm audit --audit-level=high
 
   admin:
@@ -44,7 +46,7 @@ jobs:
           cache: npm
           cache-dependency-path: admin-web/package-lock.json
       - run: npm ci
-      - run: npm run build
+      - run: npm run test:soft
       - run: npm audit --omit=dev --audit-level=high
 
   pos:
@@ -60,6 +62,112 @@ jobs:
           cache: npm
           cache-dependency-path: pos-electron/package-lock.json
       - run: npm ci
-      - run: npm test
-      - run: npm run build
+      - run: npm run test:soft
       - run: npm audit --omit=dev --audit-level=high
+
+  hard-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bold_perf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bold_perf"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
+      JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      PERF_LOGIN_PHONE: +200100000000
+      PERF_LOGIN_PASSWORD: Bold1234
+      PERF_SMOKE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.11
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npm run prisma:seed
+      - run: npm run build
+      - name: Start API
+        run: |
+          npm run start:prod > /tmp/bold-api.log 2>&1 &
+          for attempt in {1..30}; do
+            curl --silent --fail http://localhost:3000/api/docs >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/bold-api.log
+          exit 1
+      - run: npm run test:hard:smoke
+
+  hard-load:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bold_perf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bold_perf"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
+      JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      PERF_LOGIN_PHONE: +200100000000
+      PERF_LOGIN_PASSWORD: Bold1234
+      PERF_CONCURRENCY: 25
+      PERF_REQUESTS_PER_WORKER: 20
+      PERF_READ_P95_MS: 300
+      PERF_PRODUCTS: 10000
+      PERF_INVOICES: 50000
+      PERF_MUTATIONS: 1
+      PERF_SALES: 100
+      PERF_SALE_P95_MS: 500
+      PERF_CASHIER_PHONE: +200100000002
+      PERF_CASHIER_PASSWORD: Bold1234
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.11
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npm run prisma:seed
+      - run: npm run perf:seed
+      - run: npm run build
+      - name: Start API
+        run: |
+          npm run start:prod > /tmp/bold-api.log 2>&1 &
+          for attempt in {1..30}; do
+            curl --silent --fail http://localhost:3000/api/docs >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/bold-api.log
+          exit 1
+      - run: npm run test:hard

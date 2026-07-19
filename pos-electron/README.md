@@ -12,8 +12,11 @@ for API/database setup, deployment, recovery, and security guidance.
   reconnection; operators can also select **Sync now**.
 - The header shows real API online/offline state, last successful sync, pending
   sale count, and the last error.
-- A stable device ID registers through authenticated heartbeats so Admin can
-  display, rename, monitor, or revoke the terminal.
+- A manager-issued, one-use code enrolls the stable device ID. The resulting
+  secret is encrypted with Electron `safeStorage`; Admin can display, rename,
+  monitor, or revoke the terminal.
+- An enrolled terminal and a cashier/branch-manager login from the same branch
+  are both required for sales, returns, synchronization, and heartbeats.
 - Printing uses a main-process-owned window lifecycle. Print cancellation is
   reported separately and cannot undo or duplicate a saved sale.
 
@@ -34,6 +37,7 @@ localStorage.setItem('bold_api', 'http://localhost:3000/api/v1')
 
 ```bash
 npm test
+npm run test:soft
 npm run build
 npm run dist   # Windows NSIS installer
 ```

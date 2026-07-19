@@ -44,6 +44,7 @@ export default function Sidebar(){
         {visible.map(([href,label])=>(
           <Link key={href} href={href} className={`block px-3 py-2 rounded-xl ${p===href || (href !== '/' && p.startsWith(href))?'bg-white/15': 'hover:bg-white/10'}`}>{label}</Link>
         ))}
+        {!visible.length&&<div className="rounded-lg bg-white/10 p-3 text-sm text-white/80">لم تُحمّل صلاحيات القائمة. تحقق من اتصال الخادم ثم أعد تسجيل الدخول.</div>}
       </nav>
       {userName && <div className="text-sm text-white/70 mt-8">{userName}</div>}
       <div className="text-xs text-white/50 mt-8">ar-EG • EGP</div>

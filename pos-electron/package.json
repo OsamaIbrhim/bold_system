@@ -1,6 +1,6 @@
 {
   "name": "bold-pos-electron",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Bold POS – Electron Offline – sql.js",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -9,6 +9,7 @@
     "build": "tsc && vite build && tsc -p tsconfig.electron.json",
     "start": "electron .",
     "test": "vitest run",
+    "test:soft": "npm test && npm run build",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "postinstall": "npm run build"

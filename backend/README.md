@@ -33,7 +33,8 @@ Seed login: phone `+200100000000` / password `Bold1234` – role: owner
 - Reports – sales / profit / best sellers
 - Offers – slow-stock suggestions (90d default)
 - Notifications – Email / WhatsApp Cloud API
-- Sync – full price/stock snapshot pull; sales upload through idempotent command endpoints
+- Sync – first branch snapshot followed by durable cursor-based product, price,
+  and stock deltas; sales upload through idempotent command endpoints
 
 All business endpoints require a JWT. Role authorization is enforced
 server-side, with reusable branch scoping on branch-owned resources. Login,

@@ -53,8 +53,14 @@ The current codebase includes the following safeguards:
   in one SQLite transaction.
 - Admin product and sales lists load automatically and use server-side pages of
   20 records instead of unbounded browser-side lists.
-- POS terminals register a stable local device ID, publish heartbeat and sync
-  state, and can be monitored or revoked from Admin.
+- POS terminals use a manager-issued, one-use enrollment code, keep the
+  resulting device credential in Electron `safeStorage`, publish heartbeat and
+  sync state, and can be monitored or revoked from Admin.
+- Initial POS synchronization is a complete branch snapshot; subsequent pulls
+  use a durable PostgreSQL change cursor and transfer only changed catalog,
+  price, and stock records.
+- API failures have stable error codes, Arabic/English guidance, field names,
+  and a request reference ID that support can locate in server logs.
 - Receipt printing is isolated from sale persistence: cancelling or failing a
   print cannot undo, duplicate, or crash a completed local sale.
 - CI validates the Prisma schema, runs backend tests, builds all applications,
@@ -90,8 +96,9 @@ the system into microservices at its current scale.
 | Official invoices and returns | PostgreSQL via the API |
 | Current server stock | PostgreSQL `InventoryStock` |
 | Unsynchronized cashier sales | POS SQLite outbox |
-| POS product/price/stock cache | POS SQLite snapshot |
-| POS identity and last reported state | PostgreSQL `PosTerminal` |
+| POS product/price/stock cache | POS SQLite snapshot plus incremental cursor |
+| POS device identity | Enrolled secret in Electron `safeStorage`; hash in PostgreSQL `PosTerminal` |
+| POS last reported state | PostgreSQL `PosTerminal` heartbeat fields |
 | POS last successful local synchronization | POS SQLite `sync_meta` |
 
 The POS cache is not authoritative. The server re-prices and re-validates every
@@ -129,8 +136,8 @@ Optional services:
 - An SMTP provider for email reports.
 - A Meta WhatsApp Cloud API account for WhatsApp reports.
 
-Redis and S3/R2 variables exist in `.env.example`, but the current application
-does not depend on them for its implemented workflows.
+The current application does not require Redis or S3/R2 for its implemented
+workflows.
 
 Confirm the toolchain:
 
@@ -203,7 +210,7 @@ NEXT_PUBLIC_API=http://localhost:3000/api/v1 npm run dev
 
 Open `http://localhost:3001`.
 
-### 4. Start the POS application
+### 4. Enroll and start the POS application
 
 Open another terminal:
 
@@ -213,9 +220,19 @@ npm ci
 npm run dev:electron
 ```
 
-The cashier signs in inside the application. The assigned branch comes from
-the authenticated user record; it is not selected or trusted from the sale
-payload.
+Before the first cashier login:
+
+1. Sign in to Admin as an owner or branch manager.
+2. Open **POS terminals**.
+3. Select the branch, enter a descriptive till name, and create an enrollment
+   code. The 12-character code expires after 10 minutes and works once.
+4. Enter that code on the POS setup screen while the terminal is online.
+5. Sign in with a cashier or branch-manager account assigned to the same
+   branch.
+
+The terminal remains bound to that branch. Cashiers cannot select or alter the
+sale branch. An owner account is not a cashier account; create a branch-bound
+cashier or manager for POS operation.
 
 ### Development seed accounts
 
@@ -255,6 +272,11 @@ For hosted PostgreSQL using a pooler, point `DATABASE_URL` at the pooler and
 | `JWT_EXPIRES` | `15m` | Value supported by the JWT library, such as `15m` or `1h` |
 | `REFRESH_EXPIRES` | `30d` | Integer followed by `m`, `h`, or `d` |
 | `POS_ONLINE_THRESHOLD_MS` | `90000` | Time without a heartbeat before Admin derives a terminal as offline |
+| `POS_ENROLLMENT_TTL_MS` | `600000` | Lifetime of a one-use terminal enrollment code |
+| `AUTH_RECHECK_TTL_MS` | `1000` | Coalesce concurrent JWT user rechecks; `0` disables caching, maximum is 5000 ms |
+| `LIST_COUNT_CACHE_MS` | `5000` | Short cache for identical product/invoice pagination counts; maximum is 30000 ms |
+| `SLOW_REQUEST_MS` | `500` | API duration that produces a structured slow-request warning |
+| `HTTP_TIMING_LOGS` | `false` | Log timings for every request instead of only slow requests |
 
 Do not make access tokens long lived to compensate for UI problems. The Admin
 and POS applications automatically rotate refresh tokens after a `401`.
@@ -338,6 +360,16 @@ than assigning it to arbitrary branches. Before production migration, check for:
 The terminal-observability migration creates `PosTerminal` and restores the
 `SalesInvoice(branch_id, created_at)` index used by the paginated Admin invoice
 query. It does not rewrite existing invoice or stock data.
+
+The performance migrations enable PostgreSQL `pg_trgm`, add search/list and
+hot pagination/relation indexes, add one-use terminal enrollment, create
+`SyncChange` triggers, and record the enrolled terminal on every new POS sale.
+Existing invoices keep a nullable terminal field because their physical source
+cannot be reconstructed.
+The migration user therefore needs permission to install `pg_trgm`; most hosted
+PostgreSQL providers expose it as an allowed extension. Existing automatically
+registered terminals have no device credential and must be enrolled once after
+this upgrade. No sales or outbox rows are deleted by that process.
 
 Always rehearse migrations against a recent restored production backup first.
 
@@ -429,6 +461,31 @@ directory. Preserve that file when troubleshooting unsynchronized sales.
    state from PostgreSQL. Disabling or moving a user takes effect immediately.
 6. Logout revokes the current refresh token.
 
+Admin currently stores its browser session in local storage. The POS does not:
+Electron encrypts its cashier session and terminal credential at rest with the
+operating system through `safeStorage`. POS startup rejects missing, malformed,
+`null`, or `undefined` branch/session values and verifies the cached user with
+`GET /auth/me` whenever the server is reachable.
+
+### POS device and cashier identities
+
+POS authorization has two independent layers:
+
+1. An owner or branch manager creates a short-lived enrollment code for one
+   branch through `POST /terminals/enrollment-codes`.
+2. The untrusted terminal exchanges it once through public
+   `POST /terminals/enroll` and receives a random device credential. Only its
+   SHA-256 hash is stored by the API.
+3. A cashier or branch manager assigned to the same branch signs in.
+4. Sales, returns, sync pulls, invoice-return lookups, and heartbeats require
+   both the cashier JWT and the enrolled device credential.
+5. Revoking a terminal removes its credential. Re-enabling it requires a new
+   enrollment code; an old copied credential cannot come online again.
+
+The first enrollment and first cashier login require connectivity. A previously
+validated cashier session may unlock offline for at most 24 hours. Logout ends
+the cashier session without removing the device enrollment.
+
 ### Role overview
 
 | Area | Owner | Branch manager | Cashier | Warehouse manager |
@@ -451,6 +508,28 @@ frontend visibility for authorization.
 uses that list to build its navigation. The owner receives every Admin
 capability; branch-scoped roles see only the applicable operational sections.
 
+### Validation and support references
+
+API errors use this safe contract:
+
+```json
+{
+  "code": "INSUFFICIENT_STOCK",
+  "message": "The requested quantity is not available.",
+  "message_ar": "الكمية المطلوبة غير متاحة.",
+  "field": "quantity",
+  "request_id": "0cfd..."
+}
+```
+
+Admin and POS display the Arabic guidance next to the relevant field and keep
+the user's entered data available for correction. Expected input, permission,
+stock, enrollment, and connectivity failures do not expose stack traces.
+Unexpected failures show the request reference ID; use that ID and timestamp to
+find the matching protected API log entry. Passwords, access tokens, refresh
+tokens, and device credentials must never be included in support screenshots or
+logs.
+
 ## Core business workflows
 
 ### Sale
@@ -460,8 +539,8 @@ capability; branch-scoped roles see only the applicable operational sections.
 3. Duplicate variants are aggregated.
 4. Active pricing rules and product cost are loaded on the server.
 5. Available stock is atomically checked as `qty_on_hand - qty_reserved`.
-6. Stock, invoice lines, tax snapshots, customer totals, and cashier identity
-   are committed together.
+6. Stock, invoice lines, tax snapshots, customer totals, cashier identity, and
+   enrolled terminal identity are committed together.
 7. Replaying the same `sync_id` returns the existing invoice without deducting
    stock twice.
 
@@ -564,17 +643,25 @@ The Electron main process maintains:
 The POS synchronizes immediately after login, every 15 seconds thereafter,
 when the operating system reports that connectivity returned, and on demand
 through **Sync now**. Each cycle publishes a heartbeat, uploads pending sales,
-pulls a snapshot only after every upload succeeds, saves the server timestamp,
-and publishes the final state and pending count.
+pulls server changes only after every upload succeeds, saves the server cursor
+and timestamp, and publishes the final state and pending count.
 
 The status badge therefore represents real API reachability rather than only
 the browser network flag. Admin derives online state from `last_seen_at`; the
 default threshold is 90 seconds and can be changed with
 `POS_ONLINE_THRESHOLD_MS`.
 
-`GET /sync/pull` intentionally returns a full branch snapshot. It does not
-pretend to be incremental because the current product, pricing, and stock
-tables do not all have a reliable change cursor.
+The first `GET /sync/pull` returns a full active catalog and branch-stock
+snapshot plus a cursor. PostgreSQL triggers append relevant product, variant,
+pricing-rule, and inventory changes to `SyncChange`. Later requests send the
+cursor and receive only affected variants and branch stock. Catalog-wide price
+or product changes request a safe local catalog reset. The cursor is advanced
+inside the same local SQLite transaction that applies the delta, so an
+interrupted update is replayed rather than skipped.
+
+Pricing for a snapshot or delta is calculated in bulk: active rules are loaded
+once instead of querying the product and all rules for every variant. API
+responses larger than 1 KiB are compressed.
 
 `POST /sync/push` returns `501 Not Implemented`. Sales are uploaded through the
 idempotent `/pos/sale` command endpoint.
@@ -622,6 +709,8 @@ one returned by every successful refresh.
 ```bash
 curl -X POST http://localhost:3000/api/v1/pos/sale \
   -H "Authorization: Bearer $TOKEN" \
+  -H "x-pos-device-id: $DEVICE_ID" \
+  -H "x-pos-device-token: $DEVICE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "sync_id":"11111111-1111-4111-8111-111111111111",
@@ -649,8 +738,25 @@ installed POS clients. Admin uses the paginated `/products` endpoint.
 ### Publish and inspect terminal status
 
 ```bash
+# Owner/manager creates a 10-minute one-use code.
+curl -X POST http://localhost:3000/api/v1/terminals/enrollment-codes \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"branch_id":"BRANCH_UUID","name":"Main till 1"}'
+
+# The new device exchanges the code once; save DEVICE_TOKEN with safeStorage.
+curl -X POST http://localhost:3000/api/v1/terminals/enroll \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "enrollment_code":"12_CHAR_CODE",
+    "device_id":"11111111-1111-4111-8111-111111111111",
+    "name":"Main till 1",
+    "app_version":"1.2.0"
+  }'
+
 curl -X POST http://localhost:3000/api/v1/terminals/heartbeat \
   -H "Authorization: Bearer $TOKEN" \
+  -H "x-pos-device-token: $DEVICE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "device_id":"11111111-1111-4111-8111-111111111111",
@@ -669,7 +775,9 @@ curl http://localhost:3000/api/v1/terminals \
 
 ```bash
 curl 'http://localhost:3000/api/v1/pos/invoices/lookup?reference=INVOICE_NUMBER' \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $TOKEN" \
+  -H "x-pos-device-id: $DEVICE_ID" \
+  -H "x-pos-device-token: $DEVICE_TOKEN"
 ```
 
 ### Create a return
@@ -677,6 +785,8 @@ curl 'http://localhost:3000/api/v1/pos/invoices/lookup?reference=INVOICE_NUMBER'
 ```bash
 curl -X POST http://localhost:3000/api/v1/pos/return \
   -H "Authorization: Bearer $TOKEN" \
+  -H "x-pos-device-id: $DEVICE_ID" \
+  -H "x-pos-device-token: $DEVICE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "original_invoice_id":"INVOICE_UUID",
@@ -721,33 +831,126 @@ curl -X POST http://localhost:3000/api/v1/transfers/TRANSFER_UUID/receive \
 
 ## Testing and CI
 
-### Backend tests
+The repository has two deliberately separate gates. **Soft** checks answer
+"can this revision run correctly?". **Hard** checks answer "does it remain
+correct and responsive under volume and concurrency?". A performance failure
+must not be hidden inside an ordinary unit-test run.
+
+### Soft suite
+
+Run every foundational check from the repository root:
+
+```bash
+npm run test:soft
+```
+
+This runs backend unit/contract tests and builds, the production Admin build,
+and POS unit tests plus its production build. Individual commands are:
 
 ```bash
 cd backend
 npm ci
-npm test -- --runInBand
-npm run build
+npm run test:soft
+
+cd ../admin-web
+npm ci
+npm run test:soft
+
+cd ../pos-electron
+npm ci
+npm run test:soft
 ```
 
-The current suite covers authentication refresh rotation, role enforcement,
-server-authoritative sales, insufficient and reserved stock, return fraud and
-quantity controls, Arabic invoice PDFs, pricing-rule selection, transactional
-purchasing, transfer transitions, shift cash calculations, invoice/product
-pagination, terminal registration, revocation, and online-state derivation.
+The soft suite covers refresh rotation, permission enforcement, server-owned
+pricing, decimal totals, atomic stock, idempotent sales, return concurrency,
+Arabic/English PDF font embedding and pagination, product/invoice pagination,
+one-use terminal enrollment, device credential enforcement, stale POS session
+rejection, incremental synchronization, outbox safety, purchasing, transfers,
+shifts, and structured user-facing errors.
 
-### POS synchronization tests
+### Hard smoke and load suites
+
+Hard tests require a running API and a dedicated PostgreSQL database. Never
+point volume seeding at production. The volume seeder refuses to run unless the
+database URL contains `bold_perf`, unless the operator explicitly overrides the
+safety gate.
+
+Prepare a representative performance database:
 
 ```bash
-cd pos-electron
+cd backend
 npm ci
-npm test
+npx prisma migrate deploy
+npm run prisma:seed
+PERF_PRODUCTS=10000 PERF_INVOICES=50000 npm run perf:seed
 npm run build
+npm run start:prod
 ```
 
-These tests verify upload-before-pull ordering, successful timestamp updates,
-outbox acknowledgement, and the fail-closed rule that a rejected sale prevents
-a stock snapshot from overwriting local state.
+The volume seeder is restartable: deterministic identifiers plus
+`skipDuplicates` allow an interrupted or repeated run to add only missing
+products, stock rows, invoices, and invoice lines. Keep the same product and
+invoice targets when resuming a partially completed seed.
+
+From another terminal, run a short gate:
+
+```bash
+cd backend
+PERF_LOGIN_PHONE=+200100000000 \
+PERF_LOGIN_PASSWORD=Bold1234 \
+npm run test:hard:smoke
+```
+
+Run the full default load profile:
+
+```bash
+PERF_LOGIN_PHONE=+200100000000 \
+PERF_LOGIN_PASSWORD=Bold1234 \
+PERF_CONCURRENCY=25 \
+PERF_REQUESTS_PER_WORKER=20 \
+PERF_READ_P95_MS=300 \
+npm run test:hard
+```
+
+The full runner first verifies that the performance database contains at least
+10,000 products and 50,000 invoices. If it reports `DATASET_TOO_SMALL`, run the
+volume seeder; use `test:hard:smoke` for a deliberately small development data
+set. `PERF_REQUIRE_VOLUME=0` is available only for diagnostics and must not be
+used as release qualification.
+
+The runner warms each route, measures a single-client baseline, then exercises
+first-page and deep-page product/invoice queries, an initial POS snapshot, and
+an empty incremental pull. It reports request count, throughput, error rate,
+p50/p95/p99 client latency, API `server_p95_ms`, time outside the server, and
+timing-header coverage. Requests time out after 15 seconds by default; change
+that diagnostic ceiling with `PERF_REQUEST_TIMEOUT_MS`.
+
+Unlike the earlier fail-fast script, every readable scenario completes and all
+threshold or correctness failures are collected in the final `summary` record.
+Defaults are p95 below 300 ms and unexpected errors below 0.5% for the full
+profile. Calibrate budgets on hardware comparable to production; do not weaken
+them merely to make an overloaded host pass.
+
+Interpret the timing split as follows:
+
+- High `server_p95_ms`: inspect PostgreSQL pool waiting, slow-query plans, API
+  CPU, and `SLOW` log entries.
+- Low server time but high `outside_server_p95_ms`: inspect the client/server
+  hosts, HTTP socket queuing, proxy, antivirus, or network path.
+- Missing `server-timing`: rebuild and restart the API from the same source
+  before trusting the result.
+
+Set `PERF_MUTATIONS=1` on an isolated performance database to run concurrent
+real sales as well. That phase generates unique `sync_id` values, retries an
+accepted command, and then queries PostgreSQL directly to assert: exactly one
+invoice per command, no duplicate stock deduction, non-negative stock, and
+exact line subtotal + tax = invoice total using decimal arithmetic. Its default
+sale budget is p95 below 500 ms.
+
+The scheduled CI profile seeds 10,000 products and 50,000 invoices. For release
+qualification, increase `PERF_PRODUCTS`, `PERF_INVOICES`, concurrency, and
+duration to match expected three-year volume, then perform a 30–60 minute soak
+while monitoring PostgreSQL CPU, locks, connections, API memory, and slow logs.
 
 ### Schema validation
 
@@ -792,9 +995,12 @@ critical advisories.
 
 1. Installs each application from its lockfile with `npm ci`.
 2. Validates the Prisma schema.
-3. Runs backend tests and POS synchronization tests.
-4. Builds the API, Admin, and POS applications.
+3. Runs all soft tests and builds.
+4. Starts a real PostgreSQL 16 service, deploys migrations, seeds test data,
+   starts the API, and runs the hard smoke thresholds.
 5. Runs high-severity dependency audit gates.
+6. On a nightly schedule or manual dispatch, adds the large deterministic
+   dataset and runs the full hard load profile.
 
 ## Production deployment
 
@@ -860,12 +1066,17 @@ HTTPS URL reachable from cashier/admin networks.
 
 - Build a signed Windows installer where possible.
 - Enroll a small pilot group first.
-- Sign in each till with a user assigned to the correct branch.
+- In Admin → **POS terminals**, issue one enrollment code per physical till.
+- Enter the code on that till within 10 minutes, then sign in with a cashier or
+  branch manager assigned to the same branch.
 - Perform the initial online snapshot before allowing offline sales.
 - Verify the configured thermal printer and Windows cash-drawer behavior.
 - Back up or preserve the POS SQLite file whenever an outbox is pending.
-- Opening the POS after login registers the device automatically. Rename or
-  revoke it from Admin → **POS terminals**.
+- Verify the terminal code, application version, branch, last connection, last
+  successful synchronization, and pending count in Admin.
+- Revocation invalidates the device secret. To restore a revoked device,
+  re-enable it in Admin, issue a new one-use enrollment code, and enroll it
+  again; the old secret remains invalid.
 
 ## Backup and recovery
 
@@ -963,6 +1174,22 @@ PostgreSQL instance.
   sign in again.
 - Confirm the user is active.
 
+### Admin owner cannot see invoices or other menu entries
+
+- Open `GET /api/v1/auth/me` with the current session and confirm the role is
+  `owner` and the response includes `sales.read` plus the other capabilities.
+- Sign out and sign in again after upgrading so the browser replaces any
+  capability-free user object saved by an older release.
+- Confirm Admin points to the upgraded API, not an older server on another
+  port or host.
+- If the sidebar says permissions could not be loaded, restore API connectivity
+  and sign in again. It intentionally does not guess permissions client-side.
+
+Invoices are under **فواتير المبيعات**. The page loads the newest 20 records
+immediately, updates while visible every 30 seconds, and supports date, payment,
+branch, invoice-number, customer-name, and customer-phone filters. Empty and
+loading pages show an explanatory state instead of an unlabelled blank area.
+
 ### Browser reports a CORS error
 
 Add the exact Admin/POS origin to `CORS_ORIGINS` and restart the API. Packaged
@@ -971,12 +1198,33 @@ default development list contains both `file://` and `null`.
 
 ### POS opens but contains no products
 
-- Confirm the user is assigned to a branch.
-- Confirm the first login happened while online.
+- Confirm the device was enrolled for the intended branch and the cashier is
+  assigned to that same branch.
+- Confirm enrollment, first login, and the first snapshot happened online.
 - Confirm `/sync/pull?branch_id=...` succeeds for that user.
 - Confirm the API has products, pricing rules, and branch stock.
+- Check `sync_meta.sync_cursor`; do not edit it manually. **Sync now** safely
+  retries the current cursor.
 - Inspect the Electron console and preserve the SQLite file before resetting
   any local data.
+
+### POS asks for enrollment or shows an undefined branch
+
+Install a build produced after generated `src/*.js` files were removed. Those
+files previously shadowed the current TypeScript and could open the old UI.
+The current startup rejects literal `undefined`/`null` branch values and clears
+legacy renderer tokens. Create a fresh one-use code in Admin → **POS terminals**
+and enroll the device. Do not copy the encrypted credential file between tills.
+
+### A user sees an error reference number
+
+Ask for the exact operation, time, terminal code, and displayed reference ID.
+Search centralized API logs for the bracketed request ID. The UI message is
+safe to share; do not request passwords, tokens, device secrets, or the full
+secure-state file. Validation errors should identify the field that needs
+correction. A `500 INTERNAL_ERROR` requires server-log investigation; retrying
+financial operations blindly can create confusion even though sale `sync_id`
+is idempotent.
 
 ### POS sales remain pending
 
@@ -986,6 +1234,23 @@ default development list contains both `file://` and `null`.
   or a deleted variant.
 - Do not pull/overwrite or delete the outbox manually; the fail-closed behavior
   is protecting the local stock reservation.
+
+### Hard test reports a BigInt serialization error
+
+Rebuild and restart the API from current source. Sync cursors are decimal
+strings in the public contract, and the Express adapter has a scoped fallback
+for any future database `BigInt`. Do not patch `BigInt.prototype.toJSON`; that
+changes global JavaScript behavior and can hide a service returning the wrong
+type. Confirm the hard-test snapshot reports `"cursor_type":"string"`.
+
+### Hard test is slow with only seed data
+
+The full suite requires `npm run perf:seed`; otherwise it records
+`DATASET_TOO_SMALL`. The baseline records still help diagnose the machine. A
+large API time means the server/database is slow; a large outside-server time
+means the delay is in sockets, proxy, host contention, or the network. Always
+run `npm run build` and `npm run start:prod` for performance qualification—not
+the TypeScript watcher—and keep the API and test runner in separate terminals.
 
 ### Transfer cannot ship
 
@@ -1000,8 +1265,12 @@ destination branch (or be an owner/warehouse manager).
 
 ### Arabic invoice PDF fails
 
-Run `npm ci` in `backend/`. The Cairo Arabic WOFF font is loaded from the pinned
-`@fontsource/cairo` dependency; there is no separately downloaded TTF file.
+Run `npm ci` and `npm run build` in `backend/`. The renderer embeds complete
+DejaVu Sans regular/bold TTF files from the pinned `dejavu-fonts-ttf` package.
+It must not be changed back to a browser WOFF language subset or manually
+reverse/pre-shape Arabic strings; both cause missing boxes or disconnected
+mixed Arabic/number text. Run the PDF tests and visually render one Arabic and
+one English sample before release.
 
 ### Electron reports `Object has been destroyed`
 
@@ -1014,7 +1283,8 @@ from an older build, check its `sync_id` in the local outbox and Admin invoices.
 ### POS is online but Admin shows it offline
 
 Confirm the POS can reach `/api/v1/terminals/heartbeat`, its user is assigned
-to the expected branch, and the terminal has not been revoked. The default
+to the expected branch, the device was enrolled for that branch, and the
+terminal has not been revoked. The default
 online window is 90 seconds; configure `POS_ONLINE_THRESHOLD_MS` on the API to
 change it.
 
@@ -1031,8 +1301,10 @@ The following work is still required or intentionally incomplete:
 1. **No append-only stock ledger.** `InventoryStock` is transactionally updated,
    but the project does not yet have a single immutable `InventoryMovement`
    table covering sale, return, purchase, transfer, and adjustment events.
-2. **Snapshot sync only.** Product, price, and stock pulls are full snapshots.
-   There is no durable server change cursor or sync-event journal.
+2. **Initial snapshots are not paginated.** Subsequent sync is cursor-based and
+   incremental, but a brand-new till still receives the active catalog and
+   branch stock in one compressed response. Very large catalogs should add
+   resumable snapshot pages and retention/compaction for `SyncChange`.
 3. **No POS conflict-resolution screen.** A permanently rejected outbox sale
    remains pending and prevents a snapshot pull so stock is not silently
    overwritten.
@@ -1047,28 +1319,31 @@ The following work is still required or intentionally incomplete:
 8. **Notifications require external verification.** Email and WhatsApp code is
    present but depends on real provider credentials and has not been validated
    against the user's production accounts.
-9. **Client token storage needs hardening.** Admin and POS currently keep refresh
-   tokens in renderer/browser local storage. Production should use HttpOnly
-   cookies for Admin and Electron `safeStorage` or an OS keychain for POS.
-10. **Terminal enrollment is authenticated but not certificate-bound.** Devices
-    have stable IDs, branch ownership, heartbeat, and remote revocation, but a
-    production rollout should add an owner-issued enrollment secret or device
-    certificate and store credentials with Electron `safeStorage`.
+9. **Admin browser token storage needs hardening.** POS credentials now use
+   Electron `safeStorage`, but Admin still stores refresh tokens in browser
+   local storage. A production internet-facing Admin should use Secure,
+   HttpOnly, SameSite cookies and CSRF protection.
+10. **Terminal identity is secret-bound, not hardware-bound.** Enrollment codes,
+    hashed device credentials, branch binding, encrypted local storage, and
+    revocation are implemented. High-risk deployments may additionally require
+    OS-backed client certificates or hardware attestation.
 11. **No login rate limiter or MFA.** Add rate limiting, monitoring, lockout
     policy, and preferably MFA for owner accounts before public exposure.
-12. **Money handling is mixed.** Purchasing and shifts use Prisma Decimal, while
-    some pricing/report calculations still use JavaScript numbers. Standardize
-    all financial calculation through a shared decimal/money module.
-13. **Database integration/E2E coverage is incomplete.** Unit tests and builds
-    pass, but a real PostgreSQL integration suite and browser/Electron E2E suite
-    are still needed.
+12. **Money handling is not yet universal.** Pricing, sale totals, and return
+    totals now calculate with Prisma Decimal, while a few reporting and legacy
+    UI calculations still convert to JavaScript numbers. Continue moving every
+    financial formula into the shared server boundary.
+13. **End-to-end coverage is incomplete.** CI now deploys migrations to real
+    PostgreSQL and runs hard smoke/load gates, but browser automation, packaged
+    Electron printer tests, and a concurrent mutation/soak environment on
+    production-equivalent hardware are still required.
 14. **Admin has two moderate transitive PostCSS advisories.** npm reports no fix
     in the current Next.js 15 dependency line; continue monitoring or validate a
     controlled Next.js 16/React 19 upgrade.
 
 ## Recommended next architecture phase
 
-Keep the modular monolith and add two shared foundations:
+Keep the modular monolith. The next shared foundation should be:
 
 ### 1. Inventory movement ledger
 
@@ -1084,12 +1359,12 @@ Derive or reconcile the current stock projection from the ledger. Route sale,
 return, purchase, transfer ship/receive, and manual adjustment through one
 inventory domain service.
 
-### 2. Sync event journal
+### 2. Incremental-sync hardening
 
-In the same transaction as every sync-relevant change, write a monotonically
-ordered event containing entity type, entity ID, branch scope, operation, and
-version. POS devices can then pull events after a durable cursor instead of
-downloading full snapshots.
+The monotonically ordered `SyncChange` journal and POS cursor now exist. The
+next iteration should paginate first-time snapshots, compact old changes only
+after every active device has advanced past them, expose device cursor lag in
+Admin, and add a rejected-command reconciliation screen.
 
 Add explicit outbox states:
 
@@ -1102,9 +1377,10 @@ pending -> sending -> accepted
 
 - Add a real `Promotion` model with branch scope, fixed or percentage price,
   validity window, approval, and pricing-engine precedence.
-- Add a `Device`/`Till` model and move refresh-token storage into platform-safe
-  storage.
-- Centralize financial rounding in a decimal money service.
+- Consider hardware-bound terminal certificates where the threat model requires
+  more than the current enrolled secret and OS encryption.
+- Finish moving report and legacy UI financial rounding into the decimal money
+  boundary.
 - Add PostgreSQL integration tests around concurrent sale, return, purchase,
   and transfer operations.
 

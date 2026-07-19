@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiDelete, apiGet, apiPost } from '@/lib/api'
 
-type ProductResponse = { items:any[]; page:number; page_size:number; total:number; total_pages:number }
+type ProductResponse = { items:any[]; page:number; page_size:number; total:number; total_pages:number; suggestions?:{value:string;label:string}[] }
 
 export default function ProductsPage(){
   const [query,setQuery] = useState('')
@@ -47,7 +47,7 @@ export default function ProductsPage(){
       {error && <div className="text-red-700 py-4">{error} <button className="underline" onClick={load}>إعادة المحاولة</button></div>}
       <table><thead><tr><th>SKU</th><th>الاسم</th><th>المقاس</th><th>اللون</th><th>EAN-13</th><th>داخلي</th><th>التكلفة</th><th>المخزون</th><th></th></tr></thead><tbody>
         {data.items.map(r=><tr key={r.id}><td>{r.sku}</td><td>{r.product?.name_ar||r.product?.name_en}</td><td>{r.size||'-'}</td><td>{r.color||'-'}</td><td>{r.barcode_ean13||'-'}</td><td>{r.barcode_internal||'-'}</td><td>{r.cost_price!==undefined?`${Number(r.cost_price)} ج`:'—'}</td><td>{(r.stock_by_branch||[]).reduce((s:number,x:any)=>s+x.qty_on_hand,0)}</td><td><button className="text-red-600 text-sm" onClick={()=>del(r.id)}>حذف</button></td></tr>)}
-        {!loading&&!data.items.length&&<tr><td colSpan={9} className="text-center text-gray-500 py-8">لا توجد منتجات مطابقة</td></tr>}
+        {!loading&&!data.items.length&&<tr><td colSpan={9} className="text-center text-gray-500 py-8"><div>لا توجد منتجات مطابقة. راجع الاسم أو SKU أو الباركود.</div>{!!data.suggestions?.length&&<div className="mt-3">هل تقصد: {data.suggestions.map(item=><button key={item.value} className="text-blue-700 underline mx-1" onClick={()=>{setQuery(item.value);setAppliedQuery(item.value);setPage(1)}}>{item.label}</button>)}</div>}</td></tr>}
         {loading&&<tr><td colSpan={9} className="text-center text-gray-500 py-8">جارٍ تحميل المنتجات…</td></tr>}
       </tbody></table>
       <div className="flex items-center justify-center gap-3 mt-4"><button className="btn-secondary" disabled={page<=1||loading} onClick={()=>setPage(p=>p-1)}>السابق</button><span>صفحة {data.page} من {data.total_pages}</span><button className="btn-secondary" disabled={page>=data.total_pages||loading} onClick={()=>setPage(p=>p+1)}>التالي</button></div>

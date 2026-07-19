@@ -8,6 +8,7 @@ export type SyncState = {
   last_sync_at: string|null
   last_error: string|null
   pending_count: number
+  sync_cursor?: string|null
 }
 
 type SyncBridge = {
@@ -20,7 +21,7 @@ type SyncBridge = {
 
 type SyncApi = {
   sale(payload:any): Promise<any>
-  pull(branchId:string): Promise<any>
+  pull(branchId:string, cursor?:string|null): Promise<any>
   heartbeat(payload:any): Promise<any>
 }
 
@@ -80,14 +81,22 @@ export async function performSync(branchId: string, local: SyncBridge, client: S
     return pending
   }
 
-  const snapshot = await client.pull(branchId)
-  await local.sync_apply_pull(snapshot)
+  let cursor = state.sync_cursor || null
+  let response: any
+  let pages = 0
+  do {
+    response = await client.pull(branchId, cursor)
+    await local.sync_apply_pull(response)
+    cursor = response.cursor ?? cursor
+    pages += 1
+  } while (response.has_more && pages < 10)
   const completed = {
     ...state,
     sync_status: 'success' as const,
-    last_sync_at: snapshot.server_time || new Date().toISOString(),
+    last_sync_at: response.server_time || new Date().toISOString(),
     last_error: null,
     pending_count: 0,
+    sync_cursor: cursor,
   }
   await local.sync_set_status(completed)
   await publishHeartbeat(client, completed)

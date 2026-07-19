@@ -14,10 +14,9 @@ describe('SalesService', () => {
   it('lists invoices in pages and applies the caller branch scope', async () => {
     const prisma = {
       salesInvoice: {
-        count: jest.fn().mockReturnValue('count-query'),
-        findMany: jest.fn().mockReturnValue('items-query'),
+        count: jest.fn().mockResolvedValue(21),
+        findMany: jest.fn().mockResolvedValue([{ id: 'sale-1' }]),
       },
-      $transaction: jest.fn().mockResolvedValue([21, [{ id: 'sale-1' }]]),
     };
     const service = new SalesService(prisma as any, {} as any);
     const result = await service.listSales({ q:'', page:2, page_size:20 } as any, 'branch-1');
@@ -25,6 +24,7 @@ describe('SalesService', () => {
       where: { branch_id:'branch-1' }, skip:20, take:20,
     }));
     expect(result).toMatchObject({ total:21, total_pages:2, page:2 });
+    expect(prisma.salesInvoice.count).toHaveBeenCalledTimes(1);
   });
 
   function setup(stockCount = 1) {
@@ -35,7 +35,12 @@ describe('SalesService', () => {
         create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'sale-1', ...data, items: data.items.create })),
       },
       productVariant: {
-        findUnique: jest.fn().mockResolvedValue({ id: dto.items[0].variant_id, cost_price: 100 }),
+        findMany: jest.fn().mockResolvedValue([{
+          id: dto.items[0].variant_id,
+          product_id: 'product-1',
+          cost_price: 100,
+          product: { is_active: true, category_id: null, brand: null },
+        }]),
       },
       $executeRaw: jest.fn().mockResolvedValue(stockCount),
       inventoryStock: {},
@@ -45,7 +50,9 @@ describe('SalesService', () => {
       $transaction: jest.fn((callback) => callback(tx)),
     };
     const pricing = {
-      calculate: jest.fn().mockResolvedValue({ net_price: 150, tax_amount: 21 }),
+      calculateMany: jest.fn().mockResolvedValue(new Map([
+        [dto.items[0].variant_id, { net_price: 150, tax_amount: 21 }],
+      ])),
     };
     return { service: new SalesService(prisma as any, pricing as any), prisma, pricing, tx };
   }
@@ -58,14 +65,17 @@ describe('SalesService', () => {
 
   it('uses server price, server cost, authenticated cashier, and one transaction', async () => {
     const { service, prisma, pricing, tx } = setup();
-    const result = await service.createSale(dto, actor);
+    const result = await service.createSale(dto, actor, 'terminal-1');
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(pricing.calculate).toHaveBeenCalledWith(dto.items[0].variant_id, tx);
+    expect(pricing.calculateMany).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ id: dto.items[0].variant_id }),
+    ]), tx);
     expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
     expect(tx.salesInvoice.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         cashier_id: actor.sub,
+        terminal_id: 'terminal-1',
         subtotal: 300,
         tax_amount: 42,
         total: 342,

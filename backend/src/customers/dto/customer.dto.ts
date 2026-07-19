@@ -1,8 +1,9 @@
-import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class CreateCustomerDto {
   @IsOptional()
   @IsString()
+  @MinLength(2, { message: 'name must contain at least 2 characters when provided' })
   @MaxLength(150)
   name?: string;
 
@@ -21,6 +22,7 @@ export class CreateCustomerDto {
 export class UpdateCustomerDto {
   @IsOptional()
   @IsString()
+  @MinLength(2, { message: 'name must contain at least 2 characters when provided' })
   @MaxLength(150)
   name?: string;
 

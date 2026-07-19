@@ -3,6 +3,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
 @Injectable()
 export class ProductsService {
+  private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
+
   constructor(private prisma: PrismaService) {}
   async list(q: string, page: number, pageSize: number, branchId?: string, includeCost = false) {
     const query = q.trim();
@@ -16,8 +18,11 @@ export class ProductsService {
         { product: { name_ar: { contains: query, mode: 'insensitive' as const } } },
       ],
     } : { product: { is_active: true } };
-    const [total, variants] = await this.prisma.$transaction([
-      this.prisma.productVariant.count({ where }),
+    // List/count consistency to the exact millisecond is not a business
+    // invariant. Avoid a read transaction that pins one pool connection while
+    // two independent queries run, and coalesce repeated identical counts.
+    const [total, variants] = await Promise.all([
+      this.cachedCount(query, where),
       this.prisma.productVariant.findMany({
         where,
         include: {
@@ -30,13 +35,63 @@ export class ProductsService {
       }),
     ]);
     const items = variants.map((variant) => this.present(variant, branchId, includeCost));
+    let suggestions: { value: string; label: string }[] = [];
+    if (query.length >= 2 && total === 0) {
+      const similar = await this.prisma.$queryRaw<Array<{ name_en: string; name_ar: string | null; sku: string; score: number }>>`
+        SELECT p."name_en", p."name_ar", v."sku",
+          GREATEST(
+            similarity(COALESCE(p."name_en", ''), ${query}),
+            similarity(COALESCE(p."name_ar", ''), ${query}),
+            similarity(v."sku", ${query})
+          ) AS score
+        FROM "ProductVariant" v
+        JOIN "Product" p ON p."id" = v."product_id"
+        WHERE p."is_active" = true
+        ORDER BY score DESC
+        LIMIT 8
+      `;
+      const seen = new Set<string>();
+      suggestions = similar
+        .filter((item) => item.score >= 0.15)
+        .map((item) => ({ value: item.name_en || item.sku, label: item.name_ar || item.name_en || item.sku }))
+        .filter((item) => !seen.has(item.value) && !!seen.add(item.value))
+        .slice(0, 3);
+    }
     return {
       items,
       page,
       page_size: pageSize,
       total,
       total_pages: Math.max(1, Math.ceil(total / pageSize)),
+      suggestions,
     };
+  }
+
+  private cachedCount(query: string, where: any) {
+    const key = query.toLocaleLowerCase('en-US');
+    const now = Date.now();
+    const cached = this.countCache.get(key);
+    if (cached && cached.expiresAt > now) return cached.value;
+    const ttl = Math.min(30_000, Math.max(0, Number(process.env.LIST_COUNT_CACHE_MS || 5_000)));
+    let value: Promise<number>;
+    value = this.prisma.productVariant.count({ where }).then((total) => {
+      if (this.countCache.get(key)?.value === value) {
+        this.countCache.set(key, { expiresAt: Date.now() + ttl, value: Promise.resolve(total) });
+      }
+      return total;
+    }).catch((error) => {
+      if (this.countCache.get(key)?.value === value) this.countCache.delete(key);
+      throw error;
+    });
+    // An in-flight count never expires; all concurrent callers share it. The
+    // short TTL starts only after the database query has completed.
+    this.countCache.set(key, { expiresAt: Number.POSITIVE_INFINITY, value });
+    if (this.countCache.size > 200) this.countCache.delete(this.countCache.keys().next().value!);
+    return value;
+  }
+
+  private invalidateCounts() {
+    this.countCache.clear();
   }
 
   async search(q: string, branchId?: string, includeCost = false) {
@@ -92,6 +147,7 @@ export class ProductsService {
       },
       include: { variants: true }
     });
+    this.invalidateCounts();
     return product;
   }
   async updateVariant(id: string, dto: UpdateVariantDto) {
@@ -117,6 +173,8 @@ export class ProductsService {
     if (totalStock > 0) throw new BadRequestException('Cannot delete – stock exists: ' + totalStock + ' pcs. Adjust inventory to 0 first.');
     const salesCount = await this.prisma.salesInvoiceItem.count({ where: { variant_id: id }});
     if (salesCount > 0) throw new BadRequestException('Cannot delete – variant has sales history. Deactivate product instead.');
-    return this.prisma.productVariant.delete({ where: { id }});
+    const removed = await this.prisma.productVariant.delete({ where: { id }});
+    this.invalidateCounts();
+    return removed;
   }
 }

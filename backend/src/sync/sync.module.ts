@@ -3,5 +3,6 @@ import { SyncService } from './sync.service';
 import { SyncController } from './sync.controller';
 import { SalesModule } from '../sales/sales.module';
 import { PricingModule } from '../pricing/pricing.module';
-@Module({ imports: [SalesModule, PricingModule], providers: [SyncService], controllers: [SyncController] })
+import { TerminalsModule } from '../terminals/terminals.module';
+@Module({ imports: [SalesModule, PricingModule, TerminalsModule], providers: [SyncService], controllers: [SyncController] })
 export class SyncModule {}

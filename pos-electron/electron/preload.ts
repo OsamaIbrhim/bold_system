@@ -9,5 +9,8 @@ contextBridge.exposeInMainWorld('bold', {
   sync_apply_pull: (data: any) => ipcRenderer.invoke('sync:apply_pull', data),
   sync_get_status: () => ipcRenderer.invoke('sync:get_status'),
   sync_set_status: (status: any) => ipcRenderer.invoke('sync:set_status', status),
+  secure_get: () => ipcRenderer.invoke('secure:get'),
+  secure_set_auth: (auth: any) => ipcRenderer.invoke('secure:set_auth', auth),
+  secure_set_device: (device: any) => ipcRenderer.invoke('secure:set_device', device),
 })
 declare global { interface Window { bold: any } }

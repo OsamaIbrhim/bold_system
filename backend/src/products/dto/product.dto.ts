@@ -1,4 +1,5 @@
-import { IsNumber, IsOptional, IsString, IsUUID, Matches, MaxLength, Min } from 'class-validator';
+import { IsNumber, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 class VariantFieldsDto {
   @IsOptional()
@@ -32,7 +33,9 @@ class VariantFieldsDto {
 }
 
 export class CreateProductDto extends VariantFieldsDto {
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
   @IsString()
+  @MinLength(2, { message: 'name_en must contain at least 2 characters' })
   @MaxLength(200)
   name_en: string;
 
@@ -51,6 +54,7 @@ export class CreateProductDto extends VariantFieldsDto {
   category_id?: string;
 
   @IsString()
+  @MinLength(2, { message: 'sku must contain at least 2 characters' })
   @MaxLength(100)
   sku: string;
 }

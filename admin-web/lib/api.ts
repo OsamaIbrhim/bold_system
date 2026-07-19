@@ -1,6 +1,54 @@
 const API_BASE = process.env.NEXT_PUBLIC_API || 'http://localhost:3000/api/v1'
 
 let refreshPromise: Promise<boolean> | null = null
+const inFlightGets = new Map<string, Promise<any>>()
+
+export type ApiErrorPayload = {
+  code?: string
+  message?: string
+  message_ar?: string
+  field?: string
+  details?: string[]
+  request_id?: string
+}
+
+const fieldLabels: Record<string, string> = {
+  name: 'الاسم',
+  name_ar: 'الاسم العربي',
+  name_en: 'الاسم الإنجليزي',
+  phone: 'رقم الهاتف',
+  email: 'البريد الإلكتروني',
+  password: 'كلمة المرور',
+  sku: 'رمز SKU',
+  barcode_ean13: 'باركود EAN-13',
+  barcode_internal: 'الباركود الداخلي',
+  enrollment_code: 'رمز تسجيل الجهاز',
+  branch_id: 'الفرع',
+  quantity: 'الكمية',
+}
+
+export class ApiError extends Error {
+  code: string
+  field?: string
+  details: string[]
+  requestId?: string
+
+  constructor(payload: ApiErrorPayload, status?: number) {
+    const message = payload.message_ar || payload.message || `تعذر إتمام الطلب${status ? ` (HTTP ${status})` : ''}`
+    const fieldHint = payload.field ? fieldLabels[payload.field] || payload.field : ''
+    super(`${message}${fieldHint ? ` الحقل المطلوب مراجعته: ${fieldHint}.` : ''}`)
+    this.name = 'ApiError'
+    this.code = payload.code || 'REQUEST_FAILED'
+    this.field = payload.field
+    this.details = payload.details || []
+    this.requestId = payload.request_id
+  }
+}
+
+async function readApiError(response: Response) {
+  const body = await response.json().catch(async () => ({ message: await response.text().catch(() => response.statusText) }))
+  return new ApiError(body || {}, response.status)
+}
 
 function getToken() {
   if (typeof window === 'undefined') return null
@@ -37,11 +85,28 @@ async function refreshSession() {
 
 async function authorizedFetch(path: string, init: RequestInit = {}, retry = true) {
   const token = getToken()
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init.headers || {}) },
-    cache: 'no-store',
-  })
+  const requestId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `web-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'x-request-id': requestId,
+        ...(init.headers || {}),
+      },
+      cache: 'no-store',
+    })
+  } catch {
+    throw new ApiError({
+      code: 'NETWORK_ERROR',
+      message_ar: 'لا يمكن الوصول إلى الخادم. تحقق من تشغيل الخادم والاتصال بالشبكة ثم حاول مرة أخرى.',
+      message: 'The server cannot be reached. Check the server and network, then try again.',
+      request_id: requestId,
+    })
+  }
   if (response.status === 401 && retry && await refreshSession()) {
     return authorizedFetch(path, init, false)
   }
@@ -58,15 +123,20 @@ async function handleResponse(res: Response, path: string) {
     throw new Error('Unauthorized')
   }
   if (!res.ok) {
-    const text = await res.text().catch(()=>res.statusText)
-    throw new Error(text || `HTTP ${res.status} – ${path}`)
+    throw await readApiError(res)
   }
   const ct = res.headers.get('content-type') || ''
   return ct.includes('application/json') ? res.json() : res.text()
 }
 
 export async function apiGet(path: string) {
-  return handleResponse(await authorizedFetch(path), path)
+  const existing = inFlightGets.get(path)
+  if (existing) return existing
+  const request = authorizedFetch(path)
+    .then(response => handleResponse(response, path))
+    .finally(() => inFlightGets.delete(path))
+  inFlightGets.set(path, request)
+  return request
 }
 
 export async function apiPost(path: string, body: any) {
@@ -88,8 +158,7 @@ export async function apiDelete(path: string) {
 export async function apiGetBlob(path: string) {
   const response = await authorizedFetch(path)
   if (!response.ok) {
-    const message = await response.text().catch(() => response.statusText)
-    throw new Error(message || `HTTP ${response.status} – ${path}`)
+    throw await readApiError(response)
   }
   return response.blob()
 }

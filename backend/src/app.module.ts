@@ -16,10 +16,11 @@ import { OffersModule } from './offers/offers.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SyncModule } from './sync/sync.module';
 import { ShiftsModule } from './shifts/shifts.module';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
 import { TerminalsModule } from './terminals/terminals.module';
+import { PerformanceInterceptor } from './common/performance.interceptor';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { TerminalsModule } from './terminals/terminals.module';
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_INTERCEPTOR, useClass: PerformanceInterceptor },
   ],
 })
 export class AppModule {}

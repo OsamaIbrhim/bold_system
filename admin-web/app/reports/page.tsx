@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiGet, apiPost } from '@/lib/api'
 
 export default function Reports(){
@@ -10,23 +10,35 @@ export default function Reports(){
   const [profitItems,setProfitItems] = useState<any[]>([])
   const [invVal,setInvVal] = useState<any>(null)
   const [sending,setSending] = useState(false)
+  const [loading,setLoading] = useState(false)
+  const [error,setError] = useState('')
+  const [branches,setBranches] = useState<any[]>([])
   const [tab,setTab] = useState<'sales'|'profit'|'inventory'>('sales')
 
-  const runSales = async ()=> { 
+  useEffect(()=>{apiGet('/branches').then(setBranches).catch(()=>undefined)},[])
+
+  const execute = async (operation:()=>Promise<void>) => {
+    setLoading(true); setError('')
+    try { await operation() }
+    catch(e:any) { setError(`${e.message||'تعذر إنشاء التقرير'}${e.requestId?` — المرجع: ${e.requestId}`:''}`) }
+    finally { setLoading(false) }
+  }
+
+  const runSales = ()=>execute(async()=> {
     const r = await apiGet(`/reports/sales?from=${from}&to=${to}${branch?`&branch_id=${branch}`:''}`); 
     setRes(r); setTab('sales')
-  }
-  const runProfit = async ()=> {
+  })
+  const runProfit = ()=>execute(async()=> {
     const r = await apiGet(`/reports/profit-by-item?from=${from}&to=${to}${branch?`&branch_id=${branch}`:''}`);
     setProfitItems(Array.isArray(r)?r:[]); setTab('profit')
-  }
-  const runInv = async ()=> {
+  })
+  const runInv = ()=>execute(async()=> {
     const r = await apiGet(`/reports/inventory-valuation${branch?`?branch_id=${branch}`:''}`);
     setInvVal(r); setTab('inventory')
-  }
+  })
   const send = async (channels: string[]) => {
     setSending(true)
-    try { const r = await apiPost('/reports/send', { from, to, branch_id: branch||undefined, channels }); alert('تم الإرسال ✓') }
+    try { await apiPost('/reports/send', { from, to, branch_id: branch||undefined, channels }); alert('تم الإرسال ✓') }
     catch(e:any){ alert('خطأ: '+e.message) }
     finally { setSending(false) }
   }
@@ -37,13 +49,17 @@ export default function Reports(){
       <div className="card flex flex-wrap gap-2 items-end">
         <div><label className="text-sm">من</label><input type="date" className="input" value={from} onChange={e=>setFrom(e.target.value)} /></div>
         <div><label className="text-sm">إلى</label><input type="date" className="input" value={to} onChange={e=>setTo(e.target.value)} /></div>
-        <div><label className="text-sm">Branch UUID (اختياري)</label><input className="input" placeholder="branch_id" value={branch} onChange={e=>setBranch(e.target.value)} /></div>
-        <button className="btn" onClick={runSales}>مبيعات</button>
-        <button className="btn" onClick={runProfit}>ربح per صنف</button>
-        <button className="btn" onClick={runInv}>تقييم المخزون</button>
+        <div><label className="text-sm">الفرع (اختياري)</label><select className="select" value={branch} onChange={e=>setBranch(e.target.value)}><option value="">كل الفروع المتاحة</option>{branches.map(item=><option key={item.id} value={item.id}>{item.name_ar||item.name_en||item.code}</option>)}</select></div>
+        <button className="btn" disabled={loading} onClick={runSales}>مبيعات</button>
+        <button className="btn" disabled={loading} onClick={runProfit}>ربح لكل صنف</button>
+        <button className="btn" disabled={loading} onClick={runInv}>تقييم المخزون</button>
         <button className="btn-accent" disabled={sending} onClick={()=>send(['email'])}>Email</button>
         <button className="btn-accent" disabled={sending} onClick={()=>send(['whatsapp'])}>WhatsApp</button>
       </div>
+
+      {error&&<div className="card border border-red-200 bg-red-50 text-red-800" role="alert">{error}</div>}
+      {loading&&<div className="card text-center text-gray-500">جارٍ إعداد التقرير…</div>}
+      {!loading&&!error&&tab==='sales'&&!res&&<div className="card text-center text-gray-500 py-10">اختر الفترة والفرع، ثم اختر نوع التقرير لعرض النتائج هنا.</div>}
 
       {tab==='sales' && res && (
         <div className="card">
@@ -61,7 +77,7 @@ export default function Reports(){
           <h2 className="font-bold mb-2">الربح لكل صنف</h2>
           <table><thead><tr><th>الصنف</th><th>الكمية</th><th>الإيراد</th><th>التكلفة</th><th>الربح</th></tr></thead>
           <tbody>{profitItems.map((p:any)=><tr key={p.variant_id}><td>{p.name}</td><td>{p.qty}</td><td>{p.revenue.toFixed(0)}</td><td>{p.cost.toFixed(0)}</td><td className="font-bold text-green-700">{p.profit.toFixed(0)}</td></tr>)}
-          {!profitItems.length && <tr><td colSpan={5} className="text-center text-gray-500 py-4">اضغط "ربح per صنف"</td></tr>}
+          {!profitItems.length && <tr><td colSpan={5} className="text-center text-gray-500 py-4">لا توجد مبيعات مطابقة في الفترة المحددة.</td></tr>}
           </tbody></table>
         </div>
       )}

@@ -52,10 +52,10 @@ uploads/
 *.AppImage
 *.snap
 *.blockmap
+/pos-electron/src/**/*.js
+/pos-electron/electron/**/*.js
 
-# Prisma
-prisma/migrations/
-# keep: prisma/schema.prisma, prisma/seed.ts
+# Prisma migrations are production source and must be committed.
 
 # Misc
 .cache/

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
@@ -11,7 +11,32 @@ let db: any
 let win: BrowserWindow
 
 function dbPath() { return path.join(app.getPath('userData'), 'bold_pos.sqlite') }
+function secureStatePath() { return path.join(app.getPath('userData'), 'secure-state.bin') }
 function saveDb() { try { const data = db.export(); fs.writeFileSync(dbPath(), Buffer.from(data)) } catch {} }
+
+type SecureState = {
+  auth?: any
+  device?: { device_id: string, device_token: string, branch_id: string, terminal_id: string, terminal_code: string }
+}
+
+function readSecureState(): SecureState {
+  try {
+    if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(secureStatePath())) return {}
+    return JSON.parse(safeStorage.decryptString(fs.readFileSync(secureStatePath())))
+  } catch {
+    return {}
+  }
+}
+
+function writeSecureState(state: SecureState) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure credential storage is unavailable on this computer')
+  }
+  const encrypted = safeStorage.encryptString(JSON.stringify(state))
+  const temporary = `${secureStatePath()}.tmp`
+  fs.writeFileSync(temporary, encrypted, { mode: 0o600 })
+  fs.renameSync(temporary, secureStatePath())
+}
 
 function q(sql: string, params: any[] = []) { const stmt = db.prepare(sql); stmt.bind(params); const rows: any[] = []; while (stmt.step()) rows.push(stmt.getAsObject()); stmt.free(); return rows }
 function get(sql: string, params: any[] = []) { const stmt = db.prepare(sql); stmt.bind(params); const r = stmt.step() ? stmt.getAsObject() : undefined; stmt.free(); return r }
@@ -25,7 +50,7 @@ async function initDb() {
   const file = dbPath()
   db = fs.existsSync(file) ? new SQL.Database(fs.readFileSync(file)) : new SQL.Database()
   db.exec(`
-    CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, sku TEXT, name_en TEXT, barcode_ean13 TEXT, barcode_internal TEXT, size TEXT, color TEXT, cost_price REAL, selling_price REAL, unit_tax REAL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, sku TEXT, name_en TEXT, name_ar TEXT, barcode_ean13 TEXT, barcode_internal TEXT, size TEXT, color TEXT, cost_price REAL, selling_price REAL, unit_tax REAL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS stock (variant_id TEXT PRIMARY KEY, qty INTEGER);
     CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, type TEXT, payload TEXT, sync_status TEXT DEFAULT 'pending', created_at TEXT);
     CREATE TABLE IF NOT EXISTS sales_local (sync_id TEXT PRIMARY KEY, invoice_number TEXT, total REAL, created_at TEXT);
@@ -34,6 +59,7 @@ async function initDb() {
   // Forward-compatible local schema migration for databases created before
   // tax snapshots were synced with the price book.
   try { db.exec(`ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`) } catch {}
+  try { db.exec(`ALTER TABLE products ADD COLUMN name_ar TEXT`) } catch {}
   if (!getMeta('device_id')) setMeta('device_id', randomUUID())
   if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
   if (!getMeta('sync_status')) setMeta('sync_status', 'never')
@@ -84,6 +110,7 @@ ipcMain.handle('sync:get_status', () => ({
   last_sync_at: getMeta('last_sync_at') || null,
   last_error: getMeta('last_error') || null,
   pending_count: Number(get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status='pending'`)?.count || 0),
+  sync_cursor: getMeta('sync_cursor') || null,
 }))
 ipcMain.handle('sync:set_status', (_e, status: any) => {
   if (status.sync_status) setMeta('sync_status', String(status.sync_status))
@@ -92,10 +119,40 @@ ipcMain.handle('sync:set_status', (_e, status: any) => {
   saveDb()
   return { ok: true }
 })
+ipcMain.handle('secure:get', () => readSecureState())
+ipcMain.handle('secure:set_auth', (_e, auth: any) => {
+  const state = readSecureState()
+  if (auth) state.auth = auth
+  else delete state.auth
+  writeSecureState(state)
+  return { ok: true }
+})
+ipcMain.handle('secure:set_device', (_e, device: SecureState['device'] | null) => {
+  const state = readSecureState()
+  if (device) state.device = device
+  else delete state.device
+  writeSecureState(state)
+  return { ok: true }
+})
 ipcMain.handle('sync:apply_pull', (_e, data: any) => {
-  for (const p of data.products||[]) run(`INSERT OR REPLACE INTO products (id,sku,name_en,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax) VALUES (?,?,?,?,?,?,?,?,?,?)`, [p.id, p.sku, p.name_en||'', p.barcode_ean13||null, p.barcode_internal||null, p.size||null, p.color||null, 0, Number(p.selling_price||0), Number(p.unit_tax||0)])
-  for (const s of data.stock||[]) run(`INSERT OR REPLACE INTO stock (variant_id, qty) VALUES (?,?)`, [s.variant_id, s.qty_on_hand||0])
-  saveDb(); return { ok: true }
+  try {
+    db.exec('BEGIN IMMEDIATE TRANSACTION')
+    if (data.reset_products) db.exec('DELETE FROM products')
+    if (data.reset_stock) db.exec('DELETE FROM stock')
+    for (const id of data.deleted_variant_ids || []) {
+      run(`DELETE FROM products WHERE id = ?`, [id])
+      run(`DELETE FROM stock WHERE variant_id = ?`, [id])
+    }
+    for (const p of data.products||[]) run(`INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [p.id, p.sku, p.name_en||'', p.name_ar||'', p.barcode_ean13||null, p.barcode_internal||null, p.size||null, p.color||null, 0, Number(p.selling_price||0), Number(p.unit_tax||0)])
+    for (const s of data.stock||[]) run(`INSERT OR REPLACE INTO stock (variant_id, qty) VALUES (?,?)`, [s.variant_id, s.qty_on_hand||0])
+    if (data.cursor !== undefined) setMeta('sync_cursor', String(data.cursor))
+    db.exec('COMMIT')
+    saveDb()
+    return { ok: true }
+  } catch (error) {
+    try { db.exec('ROLLBACK') } catch {}
+    throw error
+  }
 })
 
 // ESC/POS Thermal Receipt – 80mm – HTML print, no native modules

@@ -10,6 +10,8 @@ import { assertBranchAccess } from '../auth/branch-access';
 import { ListSalesDto } from './dto/list-sales.dto';
 @Injectable()
 export class SalesService {
+  private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
+
   constructor(private prisma: PrismaService, private pricing: PricingService) {}
 
   async listSales(dto: ListSalesDto, branchId?: string) {
@@ -32,8 +34,9 @@ export class SalesService {
         ],
       } : {}),
     };
-    const [total, items] = await this.prisma.$transaction([
-      this.prisma.salesInvoice.count({ where }),
+    const countKey = JSON.stringify({ branchId, q, payment: dto.payment_method, status: dto.status, from: dto.from, to: dto.to });
+    const [total, items] = await Promise.all([
+      this.cachedSalesCount(countKey, where),
       this.prisma.salesInvoice.findMany({
         where,
         select: {
@@ -43,6 +46,7 @@ export class SalesService {
           branch: { select: { code: true, name_ar: true, name_en: true } },
           customer: { select: { id: true, name: true, phone: true } },
           cashier_id: true,
+          terminal: { select: { id: true, terminal_code: true, name: true } },
           status: true,
           subtotal: true,
           discount_amount: true,
@@ -69,6 +73,26 @@ export class SalesService {
     };
   }
 
+  private cachedSalesCount(key: string, where: Prisma.SalesInvoiceWhereInput) {
+    const now = Date.now();
+    const cached = this.countCache.get(key);
+    if (cached && cached.expiresAt > now) return cached.value;
+    const ttl = Math.min(30_000, Math.max(0, Number(process.env.LIST_COUNT_CACHE_MS || 5_000)));
+    let value: Promise<number>;
+    value = this.prisma.salesInvoice.count({ where }).then((total) => {
+      if (this.countCache.get(key)?.value === value) {
+        this.countCache.set(key, { expiresAt: Date.now() + ttl, value: Promise.resolve(total) });
+      }
+      return total;
+    }).catch((error) => {
+      if (this.countCache.get(key)?.value === value) this.countCache.delete(key);
+      throw error;
+    });
+    this.countCache.set(key, { expiresAt: Number.POSITIVE_INFINITY, value });
+    if (this.countCache.size > 500) this.countCache.delete(this.countCache.keys().next().value!);
+    return value;
+  }
+
   async getInvoice(id: string, actor: AuthenticatedUser) {
     const invoice = await this.prisma.salesInvoice.findUnique({
       where: { id },
@@ -81,6 +105,7 @@ export class SalesService {
         },
         branch: true,
         customer: true,
+        terminal: { select: { id: true, terminal_code: true, name: true } },
         original_returns: { include: { items: true }, orderBy: { created_at: 'desc' } },
       },
     });
@@ -96,7 +121,7 @@ export class SalesService {
   }
 
   // Create sale – idempotent via sync_id for offline POS
-  async createSale(dto: CreateSaleDto, actor: AuthenticatedUser) {
+  async createSale(dto: CreateSaleDto, actor: AuthenticatedUser, terminalId?: string) {
     if (actor.role !== 'owner' && actor.branch_id !== dto.branch_id) {
       throw new ForbiddenException('You cannot create a sale for another branch');
     }
@@ -106,7 +131,7 @@ export class SalesService {
       quantities.set(item.variant_id, (quantities.get(item.variant_id) || 0) + item.qty);
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const branch = await tx.branch.findFirst({ where: { id: dto.branch_id, is_active: true } });
       if (!branch) throw new NotFoundException('Active branch not found');
 
@@ -131,22 +156,39 @@ export class SalesService {
         tax: number;
       }[] = [];
 
-      for (const [variantId, qty] of quantities) {
-        const variant = await tx.productVariant.findUnique({ where: { id: variantId } });
-        if (!variant) throw new NotFoundException(`Variant not found: ${variantId}`);
-        const quote = await this.pricing.calculate(variantId, tx);
+      const variantIds = [...quantities.keys()];
+      const variants = await tx.productVariant.findMany({
+        where: { id: { in: variantIds }, product: { is_active: true } },
+        include: { product: true },
+      });
+      if (variants.length !== variantIds.length) {
+        const found = new Set(variants.map((variant) => variant.id));
+        const missing = variantIds.find((id) => !found.has(id));
+        throw new NotFoundException(`Active variant not found: ${missing}`);
+      }
+      const quotes = await this.pricing.calculateMany(variants, tx);
+      for (const variant of variants) {
+        const quote = quotes.get(variant.id)!;
         saleItems.push({
-          variant_id: variantId,
-          qty,
+          variant_id: variant.id,
+          qty: quantities.get(variant.id)!,
           unit_price: quote.net_price,
           unit_cost: Number(variant.cost_price),
           tax: quote.tax_amount,
         });
       }
 
-      const subtotal = Math.round(saleItems.reduce((sum, item) => sum + item.unit_price * item.qty, 0) * 100) / 100;
-      const taxAmount = Math.round(saleItems.reduce((sum, item) => sum + item.tax * item.qty, 0) * 100) / 100;
-      const total = Math.round((subtotal + taxAmount) * 100) / 100;
+      const subtotalDecimal = saleItems.reduce(
+        (sum, item) => sum.plus(new Prisma.Decimal(item.unit_price).mul(item.qty)),
+        new Prisma.Decimal(0),
+      ).toDecimalPlaces(2);
+      const taxDecimal = saleItems.reduce(
+        (sum, item) => sum.plus(new Prisma.Decimal(item.tax).mul(item.qty)),
+        new Prisma.Decimal(0),
+      ).toDecimalPlaces(2);
+      const subtotal = subtotalDecimal.toNumber();
+      const taxAmount = taxDecimal.toNumber();
+      const total = subtotalDecimal.plus(taxDecimal).toDecimalPlaces(2).toNumber();
 
       for (const item of saleItems) {
         const changed = await tx.$executeRaw`
@@ -179,6 +221,7 @@ export class SalesService {
           branch_id: dto.branch_id,
           customer_id: customerId,
           cashier_id: actor.sub,
+          terminal_id: terminalId,
           subtotal,
           tax_amount: taxAmount,
           total,
@@ -210,6 +253,8 @@ export class SalesService {
 
       return invoice;
     });
+    this.countCache.clear();
+    return result;
   }
   async createReturn(dto: CreateReturnDto, actor: AuthenticatedUser) {
     const requested = new Map<string, number>();
@@ -273,9 +318,17 @@ export class SalesService {
         });
       }
 
-      const refundSubtotal = Math.round(returnItems.reduce((sum, item) => sum + item.unit_price * item.qty, 0) * 100) / 100;
-      const refundTax = Math.round(returnItems.reduce((sum, item) => sum + item.unit_tax * item.qty, 0) * 100) / 100;
-      const refundTotal = Math.round((refundSubtotal + refundTax) * 100) / 100;
+      const refundSubtotalDecimal = returnItems.reduce(
+        (sum, item) => sum.plus(new Prisma.Decimal(item.unit_price).mul(item.qty)),
+        new Prisma.Decimal(0),
+      ).toDecimalPlaces(2);
+      const refundTaxDecimal = returnItems.reduce(
+        (sum, item) => sum.plus(new Prisma.Decimal(item.unit_tax).mul(item.qty)),
+        new Prisma.Decimal(0),
+      ).toDecimalPlaces(2);
+      const refundSubtotal = refundSubtotalDecimal.toNumber();
+      const refundTax = refundTaxDecimal.toNumber();
+      const refundTotal = refundSubtotalDecimal.plus(refundTaxDecimal).toDecimalPlaces(2).toNumber();
       const totalReturnedQty = returnItems.reduce((sum, item) => sum + item.qty, 0);
       const originalQty = original.items.reduce((sum, item) => sum + item.qty, 0);
 
@@ -318,7 +371,12 @@ export class SalesService {
         if (customer) {
           await tx.customer.update({
             where: { id: customer.id },
-            data: { total_spent: Math.max(0, Number(customer.total_spent) - refundTotal) },
+            data: {
+              total_spent: Prisma.Decimal.max(
+                new Prisma.Decimal(0),
+                new Prisma.Decimal(customer.total_spent).minus(refundTotal),
+              ),
+            },
           });
         }
       }

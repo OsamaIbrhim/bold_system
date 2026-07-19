@@ -1,0 +1,9 @@
+{
+  "name": "bold-system-workspace",
+  "private": true,
+  "scripts": {
+    "test:soft": "npm --prefix backend run test:soft && npm --prefix admin-web run test:soft && npm --prefix pos-electron run test:soft",
+    "test:hard": "npm --prefix backend run test:hard",
+    "test:all": "npm run test:soft && npm run test:hard"
+  }
+}
