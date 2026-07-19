@@ -1,5 +1,6 @@
-# Arabic Font for PDF Invoices
-Download Cairo-Regular.ttf:
-https://github.com/google/fonts/raw/main/ofl/cairo/Cairo-Regular.ttf
-Save as: backend/assets/fonts/Cairo-Regular.ttf
-License: SIL OFL – free commercial
+# Arabic font for PDF invoices
+
+Arabic invoice PDFs use the Cairo font supplied by the pinned
+`@fontsource/cairo` backend dependency. No manually downloaded font file is
+required in this directory. Cairo is distributed under the SIL Open Font
+License.

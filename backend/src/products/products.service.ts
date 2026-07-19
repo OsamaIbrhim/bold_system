@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
 @Injectable()
 export class ProductsService {
   constructor(private prisma: PrismaService) {}
-  async search(q: string, branchId?: string) {
+  async search(q: string, branchId?: string, includeCost = false) {
     const variants = await this.prisma.productVariant.findMany({
       where: {
         OR: [
@@ -13,15 +14,23 @@ export class ProductsService {
           { product: { name_en: { contains: q, mode: 'insensitive' } } }
         ]
       },
-      include: { product: true, inventory: true }
+      include: {
+        product: true,
+        inventory: branchId ? { where: { branch_id: branchId } } : true,
+      }
     });
-    return variants.map(v => ({
-      ...v,
-      stock_by_branch: v.inventory,
-      available_here: branchId ? v.inventory.find(i=>i.branch_id===branchId)?.qty_on_hand || 0 : undefined
-    }));
+    return variants.map(v => {
+      const result = {
+        ...v,
+        stock_by_branch: v.inventory,
+        available_here: branchId ? v.inventory.find(i=>i.branch_id===branchId)?.qty_on_hand || 0 : undefined
+      };
+      if (includeCost) return result;
+      const { cost_price: _costPrice, ...safe } = result;
+      return safe;
+    });
   }
-  async createProduct(dto: any) {
+  async createProduct(dto: CreateProductDto) {
     const product = await this.prisma.product.create({
       data: {
         name_en: dto.name_en,
@@ -45,7 +54,7 @@ export class ProductsService {
     });
     return product;
   }
-  async updateVariant(id: string, dto: any) {
+  async updateVariant(id: string, dto: UpdateVariantDto) {
     const exists = await this.prisma.productVariant.findUnique({ where: { id }});
     if (!exists) throw new NotFoundException('Variant not found');
     return this.prisma.productVariant.update({

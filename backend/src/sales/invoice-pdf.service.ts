@@ -1,6 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import * as fs from 'fs';
-import * as path from 'path';
 // pdfkit is CJS – use require for TS compat
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const PDFDocument = require('pdfkit');
@@ -16,9 +14,11 @@ export class InvoicePdfService {
       doc.on('data', (c: Buffer) => chunks.push(c));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
 
-      const fontPath = path.join(process.cwd(), 'assets', 'fonts', 'Cairo-Regular.ttf');
-      const hasArabicFont = fs.existsSync(fontPath);
-      if (hasArabicFont) { doc.registerFont('Arabic', fontPath); doc.font('Arabic'); }
+      // Keep the font as a package dependency so builds cannot accidentally
+      // ship an HTML download page under a .ttf filename.
+      const fontPath = require.resolve('@fontsource/cairo/files/cairo-arabic-400-normal.woff');
+      doc.registerFont('Arabic', fontPath);
+      doc.font('Arabic');
 
       const isAr = lang === 'ar';
       const ar = (s: string) => {
@@ -45,14 +45,11 @@ export class InvoicePdfService {
       }
       doc.moveDown();
       doc.fontSize(12).text((isAr ? ar('المجموع الفرعي: ') : 'Subtotal: ') + Number(invoice.subtotal).toFixed(2) + (isAr ? ' ج' : ' EGP'));
-      doc.text((isAr ? ar('الضريبة 14%: ') : 'Tax 14%: ') + Number(invoice.tax_amount).toFixed(2));
+      doc.text((isAr ? ar('الضريبة: ') : 'Tax: ') + Number(invoice.tax_amount).toFixed(2));
       doc.fontSize(14).text((isAr ? ar('الإجمالي: ') : 'Total: ') + Number(invoice.total).toFixed(2) + (isAr ? ' ج' : ' EGP'), { underline: true });
       doc.moveDown();
       doc.fontSize(9).text(isAr ? ar('سياسة الإرجاع: 14 يوم بحالة الشراء الأصلية – قانون حماية المستهلك المصري') : 'Returns: 14 days in original condition – Egyptian Consumer Protection Law');
       doc.text(isAr ? ar('شكراً لتسوقكم في Bold') : 'Thank you for shopping at Bold');
-      if (!hasArabicFont && isAr) {
-        doc.moveDown().fontSize(8).fillColor('red').text('Note: Add backend/assets/fonts/Cairo-Regular.ttf for perfect Arabic shaping');
-      }
       doc.end();
     });
   }

@@ -21,11 +21,14 @@ async function initDb() {
   const file = dbPath()
   db = fs.existsSync(file) ? new SQL.Database(fs.readFileSync(file)) : new SQL.Database()
   db.exec(`
-    CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, sku TEXT, name_en TEXT, barcode_ean13 TEXT, barcode_internal TEXT, size TEXT, color TEXT, cost_price REAL, selling_price REAL);
+    CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, sku TEXT, name_en TEXT, barcode_ean13 TEXT, barcode_internal TEXT, size TEXT, color TEXT, cost_price REAL, selling_price REAL, unit_tax REAL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS stock (variant_id TEXT PRIMARY KEY, qty INTEGER);
     CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, type TEXT, payload TEXT, sync_status TEXT DEFAULT 'pending', created_at TEXT);
     CREATE TABLE IF NOT EXISTS sales_local (sync_id TEXT PRIMARY KEY, invoice_number TEXT, total REAL, created_at TEXT);
   `)
+  // Forward-compatible local schema migration for databases created before
+  // tax snapshots were synced with the price book.
+  try { db.exec(`ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`) } catch {}
   saveDb()
 }
 
@@ -44,15 +47,29 @@ ipcMain.handle('pos:search', (_e, qstr: string) => q(`SELECT * FROM products WHE
 ipcMain.handle('pos:stock', (_e, variant_id: string) => get(`SELECT qty FROM stock WHERE variant_id = ?`, [variant_id])?.qty || 0)
 ipcMain.handle('pos:sale', (_e, sale: any) => {
   const sync_id = sale.sync_id || require('crypto').randomUUID()
-  run(`INSERT OR IGNORE INTO sales_local (sync_id, invoice_number, total, created_at) VALUES (?,?,?,?)`, [sync_id, sale.invoice_number || 'LOCAL-'+Date.now(), sale.total||0, new Date().toISOString()])
-  run(`INSERT OR REPLACE INTO outbox (id, type, payload, sync_status, created_at) VALUES (?,?,?,?,?)`, [sync_id, 'sale', JSON.stringify({...sale, sync_id}), 'pending', new Date().toISOString()])
-  for (const it of sale.items||[]) { run(`UPDATE stock SET qty = qty - ? WHERE variant_id = ?`, [it.qty, it.variant_id]) }
-  saveDb(); return { sync_id, ok: true }
+  const existing = get(`SELECT sync_id, invoice_number, total FROM sales_local WHERE sync_id = ?`, [sync_id])
+  if (existing) return { sync_id, ok: true, replayed: true }
+  const { local_total, ...command } = sale
+  try {
+    db.exec('BEGIN IMMEDIATE TRANSACTION')
+    for (const it of sale.items || []) {
+      run(`UPDATE stock SET qty = qty - ? WHERE variant_id = ? AND qty >= ?`, [it.qty, it.variant_id, it.qty])
+      if (db.getRowsModified() !== 1) throw new Error(`Insufficient local stock for ${it.variant_id}`)
+    }
+    run(`INSERT INTO sales_local (sync_id, invoice_number, total, created_at) VALUES (?,?,?,?)`, [sync_id, sale.invoice_number || 'LOCAL-'+Date.now(), local_total||0, new Date().toISOString()])
+    run(`INSERT INTO outbox (id, type, payload, sync_status, created_at) VALUES (?,?,?,?,?)`, [sync_id, 'sale', JSON.stringify({...command, sync_id}), 'pending', new Date().toISOString()])
+    db.exec('COMMIT')
+    saveDb()
+    return { sync_id, ok: true }
+  } catch (error) {
+    try { db.exec('ROLLBACK') } catch {}
+    throw error
+  }
 })
 ipcMain.handle('sync:get_outbox', () => q(`SELECT * FROM outbox WHERE sync_status='pending'`))
 ipcMain.handle('sync:mark_sent', (_e, ids: string[]) => { for (const id of ids) run(`UPDATE outbox SET sync_status='sent' WHERE id = ?`, [id]); saveDb(); return { ok: true }})
 ipcMain.handle('sync:apply_pull', (_e, data: any) => {
-  for (const p of data.products||[]) run(`INSERT OR REPLACE INTO products (id,sku,name_en,barcode_ean13,barcode_internal,size,color,cost_price,selling_price) VALUES (?,?,?,?,?,?,?,?,?)`, [p.id, p.sku, p.product?.name_en||'', p.barcode_ean13||null, p.barcode_internal||null, p.size||null, p.color||null, Number(p.cost_price||0), 0])
+  for (const p of data.products||[]) run(`INSERT OR REPLACE INTO products (id,sku,name_en,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax) VALUES (?,?,?,?,?,?,?,?,?,?)`, [p.id, p.sku, p.name_en||'', p.barcode_ean13||null, p.barcode_internal||null, p.size||null, p.color||null, 0, Number(p.selling_price||0), Number(p.unit_tax||0)])
   for (const s of data.stock||[]) run(`INSERT OR REPLACE INTO stock (variant_id, qty) VALUES (?,?)`, [s.variant_id, s.qty_on_hand||0])
   saveDb(); return { ok: true }
 })
@@ -84,7 +101,7 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar'|'en' = 'ar') => 
   <tbody>${itemsHtml}</tbody></table>
   <div class="totals">
     ${isAr ? 'الإجمالي' : 'Total'}: <b>${invoice.total || 0} ${isAr ? 'ج' : 'EGP'}</b><br>
-    <span class="small">${isAr ? 'شامل الضريبة 14%' : 'VAT 14% included'}</span>
+    <span class="small">${isAr ? 'شامل الضريبة' : 'VAT included'}</span>
   </div>
   <hr>
   <div class="center small">${isAr ? 'سياسة الإرجاع: 14 يوم بحالة الشراء الأصلية' : 'Returns: 14 days original condition'}<br>شكراً لتسوقكم في Bold – Thank you</div>

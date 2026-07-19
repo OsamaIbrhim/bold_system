@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateCustomerDto, UpdateCustomerDto } from './dto/customer.dto';
 @Injectable()
 export class CustomersService {
   constructor(private prisma: PrismaService) {}
@@ -20,8 +21,8 @@ export class CustomersService {
     });
   }
   searchByPhone(phone: string) { return this.prisma.customer.findUnique({ where: { phone }}); }
-  create(data: any) { return this.prisma.customer.create({ data }); }
-  update(id: string, data: any) { return this.prisma.customer.update({ where: { id }, data }); }
+  create(data: CreateCustomerDto) { return this.prisma.customer.create({ data }); }
+  update(id: string, data: UpdateCustomerDto) { return this.prisma.customer.update({ where: { id }, data }); }
   setVip(id: string, is_vip: boolean, vip_price_tier = 'cost_plus_overhead') {
     return this.prisma.customer.update({ where: { id }, data: { is_vip, vip_price_tier }});
   }

@@ -7,8 +7,7 @@ export default function Offers(){
   const load = async ()=> { try { const r = await apiGet('/offers/suggestions'); setRows(r) } catch{ setRows([])} }
   useEffect(()=>{ load() },[])
   const review = async (id: string, status: 'approved'|'rejected') => {
-    // API expects POST /offers/:id/review – in current scaffold we have that
-    try { await apiPost(`/offers/${id}/review`, { status, reviewed_by: 'owner' }); load() } catch(e){ alert('تم '+status+' محليا – ربط API جاهز') }
+    try { await apiPost(`/offers/${id}/review`, { status }); load() } catch(e:any){ alert('فشل: '+e.message) }
   }
   return (
     <div className="space-y-4">

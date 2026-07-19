@@ -7,6 +7,8 @@ Offline-first cashier app for Bold Men's Clothing.
 - Barcode scanner (USB HID keyboard) – auto-focus input
 - Cart, Customer phone, Payments: نقدي / فيزا / انستا باي / فودافون كاش / تقسيط
 - Sale saved locally with sync_id, auto-sync every 15s when online
+- Cashier login with rotating refresh sessions and server-derived branch identity
+- Online original-invoice returns with remaining-quantity enforcement
 - Print AR/EN – ESC/POS stub ready
 - RTL Arabic UI, product names in English
 
@@ -19,16 +21,16 @@ npx electron .
 ```
 
 ## Config
-Open DevTools Console:
+The cashier signs in inside the app. To point a development build at another API,
+open DevTools Console once and set:
 ```
-localStorage.setItem('branch_id', 'YOUR-BRANCH-UUID')
-localStorage.setItem('token', 'YOUR_JWT')
 localStorage.setItem('bold_api', 'http://localhost:3000/api/v1')
 ```
 
 The app will pull products/stock from `/sync/pull` and push sales to `/pos/sale`.
 
-Offline: sales go to outbox, stock decremented locally. Reconnect = auto upload.
+Offline: sales are committed to the outbox and local stock in one SQLite
+transaction. Reconnect uploads pending sales before accepting a fresh stock snapshot.
 
 Build installer:
 ```

@@ -94,9 +94,7 @@ Content-Type: application/json
   "items": [
     {
       "variant_id": "<variant-id>",
-      "qty": 1,
-      "unit_price": 150,
-      "unit_cost": 85
+      "qty": 1
     }
   ]
 }
@@ -108,8 +106,8 @@ Content-Type: application/json
 
 {
   "original_invoice_id": "<sales-invoice-id>",
-  "items": [{ "variant_id": "<variant-id>", "qty": 1 }],
-  "created_by": "<cashier-user-id>"
+  "items": [{ "sales_invoice_item_id": "<original-sales-line-id>", "qty": 1 }],
+  "reason": "Wrong size"
 }
 
 ### 12. SALES – PDF Invoice AR

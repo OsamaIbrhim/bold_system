@@ -1,19 +1,20 @@
+'use client'
+import { useEffect, useState } from 'react'
 import { apiGet } from '@/lib/api'
-async function getStats(){
-  try {
+
+export default function Dashboard(){
+  const [stats, setStats] = useState({ total_sales:0, profit:0, count:0 })
+  useEffect(() => {
     const today = new Date().toISOString().slice(0,10)
-    return await apiGet(`/reports/sales?from=${today}&to=${today}`)
-  } catch { return { total_sales:0, profit:0, count:0 }}
-}
-export default async function Dashboard(){
-  const s = await getStats()
+    apiGet(`/reports/sales?from=${today}&to=${today}`).then(setStats).catch(() => undefined)
+  }, [])
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">لوحة التحكم – Bold</h1>
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="card"><div className="text-sm text-gray-500">مبيعات اليوم</div><div className="text-2xl font-bold">{s.total_sales || 0} ج</div></div>
-        <div className="card"><div className="text-sm text-gray-500">الربح</div><div className="text-2xl font-bold">{s.profit || 0} ج</div></div>
-        <div className="card"><div className="text-sm text-gray-500">عدد الفواتير</div><div className="text-2xl font-bold">{s.count || 0}</div></div>
+        <div className="card"><div className="text-sm text-gray-500">مبيعات اليوم</div><div className="text-2xl font-bold">{stats.total_sales || 0} ج</div></div>
+        <div className="card"><div className="text-sm text-gray-500">الربح</div><div className="text-2xl font-bold">{stats.profit || 0} ج</div></div>
+        <div className="card"><div className="text-sm text-gray-500">عدد الفواتير</div><div className="text-2xl font-bold">{stats.count || 0}</div></div>
         <div className="card"><div className="text-sm text-gray-500">المخزون البطئ</div><div className="text-2xl font-bold">—</div></div>
       </div>
       <div className="card">
@@ -25,7 +26,7 @@ export default async function Dashboard(){
           <a href="/offers" className="btn">العروض المقترحة</a>
         </div>
       </div>
-      <div className="text-sm text-gray-500">API: {process.env.NEXT_PUBLIC_API || 'http://localhost:3000/api/v1'} – سجل دخول من /login أولا لحفظ الـ token</div>
+      <div className="text-sm text-gray-500">API: {process.env.NEXT_PUBLIC_API || 'http://localhost:3000/api/v1'}</div>
     </div>
   )
 }

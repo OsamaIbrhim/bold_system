@@ -2,13 +2,13 @@
 
 Admin dashboard for Bold POS – Arabic RTL
 
-- Next.js 14 App Router
+- Next.js 15 App Router
 - Tailwind + RTL
 - TanStack Query ready
 - API: http://localhost:3000/api/v1
 
 Pages:
-- /login – JWT login
+- /login – JWT login with rotating refresh sessions
 - / – Dashboard
 - /products – Barcode search
 - /inventory – Branch stock lookup
@@ -25,7 +25,7 @@ Run:
 npm install
 npm run dev
 # http://localhost:3001
-# login: +200100000000 / Bold1234
+# Development seed login: +200100000000 / Bold1234
 ```
 
 Set API endpoint:
@@ -33,5 +33,4 @@ Set API endpoint:
 NEXT_PUBLIC_API=http://localhost:3000/api/v1 npm run dev
 ```
 
-UI is Arabic-first, product names in English, invoices AR/EN selectable.
-Feed API_CONTRACT.yaml to Google Studio to expand the UI – all hooks are ready.
+UI is Arabic-first, product names are shown in English, and invoices support AR/EN output.

@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import * as argon2 from 'argon2';
+import * as bcryptjs from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
@@ -7,13 +7,16 @@ async function main() {
   console.log('🌱 Seeding Bold POS – Test Data v2.1 – Full with line items …');
 
   // Clean – reverse FK order
+  await prisma.returnItem.deleteMany();
+  await prisma.return.deleteMany();
+  await prisma.refreshToken.deleteMany();
   await prisma.salesInvoiceItem.deleteMany();
   await prisma.salesInvoice.deleteMany();
-  await prisma.return.deleteMany();
   await prisma.purchaseInvoiceItem.deleteMany();
   await prisma.purchaseInvoice.deleteMany();
   await prisma.transferItem.deleteMany();
   await prisma.transfer.deleteMany();
+  await prisma.$executeRawUnsafe('DELETE FROM "Shift"');
   await prisma.inventoryStock.deleteMany();
   await prisma.offerSuggestion.deleteMany();
   await prisma.productVariant.deleteMany();
@@ -25,9 +28,8 @@ async function main() {
   await prisma.user.deleteMany();
   await prisma.category.deleteMany();
   await prisma.branch.deleteMany();
-  await prisma.$executeRawUnsafe('DELETE FROM "Shift"');
 
-  const password_hash = await argon2.hash('Bold1234');
+  const password_hash = await bcryptjs.hash('Bold1234', 10);
 
   // Branches
   const b1 = await prisma.branch.create({ data: { code: 'BOLD-01', name_ar: 'بولد – الفرع الرئيسي', name_en: 'Bold Main', address: 'طنطا', phone: '0400000000', cash_drawer_enabled: false }});
@@ -201,6 +203,7 @@ async function main() {
     const s = salesInvoices[i];
     await prisma.return.create({ data: {
       original_invoice_id: s.id,
+      branch_id: s.branch_id,
       return_invoice_number: `R-${s.invoice_number}`,
       reason: 'مقاس غير مناسب',
       is_partial: true,

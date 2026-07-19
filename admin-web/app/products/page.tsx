@@ -35,7 +35,6 @@ export default function ProductsPage(){
 
   const del = async (id: string) => {
     if(!confirm('حذف الصنف؟')) return
-    // Note: backend DELETE /products/:id not implemented yet – will 404, handled gracefully
     try { await apiDelete(`/products/variants/${id}`); search() } catch(e:any){ alert('فشل الحذف: ' + e.message) }
   }
 
