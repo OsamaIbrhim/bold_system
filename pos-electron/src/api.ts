@@ -1,4 +1,4 @@
-import { DeviceCredential, Invoice, Session, Shift } from './types'
+import { DeviceCredential, Invoice, Session, Shift, ReturnRecord } from './types'
 import { bold } from './electron'
 
 const API = (typeof localStorage !== 'undefined' && localStorage.getItem('bold_api')) || 'http://localhost:3000/api/v1'
@@ -85,7 +85,7 @@ async function refreshSession() {
   return refreshPromise
 }
 
-async function request<T=any>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+async function request<T = any>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${API}${path}`, {
@@ -137,7 +137,7 @@ export const api = {
     } else if (secure.auth) await bold.secure_set_auth(null)
     return { device, session, user: session?.user || null, offline: !!session && !navigator.onLine }
   },
-  enroll: async (enrollmentCode: string, terminal: { device_id:string, terminal_name:string, app_version:string }) => {
+  enroll: async (enrollmentCode: string, terminal: { device_id: string, terminal_name: string, app_version: string }) => {
     let response: Response
     try {
       response = await fetch(`${API}/terminals/enroll`, {
@@ -201,10 +201,10 @@ export const api = {
   customerLoyalty: (phone: string) => request<any>(`/customers/loyalty?phone=${encodeURIComponent(phone)}`),
   customers: (q: string) => request<any[]>(`/customers?q=${encodeURIComponent(q)}`),
   createCustomer: (payload: any) => request<any>('/customers', { method: 'POST', body: JSON.stringify(payload) }),
-  listSales: (params: Record<string,string|number|undefined>) => {
+  listSales: (params: Record<string, string | number | undefined>) => {
     const query = new URLSearchParams()
-    Object.entries(params).forEach(([key,value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
-    return request<{items:Invoice[],total:number,total_pages:number}>(`/sales?${query.toString()}`)
+    Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+    return request<{ items: Invoice[], total: number, total_pages: number }>(`/sales?${query.toString()}`)
   },
   getSale: (id: string) => request<Invoice>(`/sales/${encodeURIComponent(id)}`),
   invoiceLookup: (reference: string) => request<any>(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
@@ -214,4 +214,31 @@ export const api = {
   closeShift: (id: string, closingCash: number) => request<Shift>(`/shifts/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({ closing_cash: closingCash }) }),
   pull: (branchId: string, cursor?: string | null) => request<any>(`/sync/pull?branch_id=${encodeURIComponent(branchId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
   heartbeat: (payload: any) => request<any>('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
+  listReturns: (
+    params: Record<
+      string,
+      string | number | undefined
+    >,
+  ) => {
+    const query = new URLSearchParams()
+
+    Object.entries(params).forEach(
+      ([key, value]) => {
+        if (
+          value !== undefined &&
+          value !== ''
+        ) {
+          query.set(key, String(value))
+        }
+      },
+    )
+
+    return request<{
+      items: ReturnRecord[]
+      total: number
+      total_pages: number
+    }>(
+      `/returns?${query.toString()}`,
+    )
+  },
 }

@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { assertBranchAccess } from '../auth/branch-access';
 import { ListSalesDto } from './dto/list-sales.dto';
+import { ListReturnsDto } from './dto/list-returns.dto'
 @Injectable()
 export class SalesService {
   private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
@@ -256,6 +257,7 @@ export class SalesService {
     this.countCache.clear();
     return result;
   }
+
   async createReturn(dto: CreateReturnDto, actor: AuthenticatedUser) {
     const requested = new Map<string, number>();
     for (const item of dto.items) {
@@ -428,5 +430,129 @@ export class SalesService {
         return { ...safe, returned_qty: returnedQty, returnable_qty: item.qty - returnedQty };
       }),
     };
+  }
+
+  async listReturns(
+    dto: ListReturnsDto,
+    branchId?: string,
+  ) {
+    const q = dto.q.trim()
+
+    const where: Prisma.ReturnWhereInput = {
+      ...(branchId
+        ? { branch_id: branchId }
+        : {}),
+
+      ...(q
+        ? {
+          OR: [
+            {
+              return_invoice_number: {
+                contains: q,
+                mode: 'insensitive',
+              },
+            },
+            {
+              original_invoice: {
+                invoice_number: {
+                  contains: q,
+                  mode: 'insensitive',
+                },
+              },
+            },
+            {
+              original_invoice: {
+                customer: {
+                  phone: {
+                    contains: q,
+                  },
+                },
+              },
+            },
+          ],
+        }
+        : {}),
+    }
+
+    const [total, items] =
+      await Promise.all([
+        this.prisma.return.count({
+          where,
+        }),
+
+        this.prisma.return.findMany({
+          where,
+
+          select: {
+            id: true,
+            return_invoice_number: true,
+            original_invoice_id: true,
+            branch_id: true,
+            reason: true,
+            is_partial: true,
+            created_by: true,
+            refund_subtotal: true,
+            refund_tax: true,
+            refund_total: true,
+            status: true,
+            created_at: true,
+
+            _count: {
+              select: {
+                items: true,
+              },
+            },
+
+            original_invoice: {
+              select: {
+                id: true,
+                invoice_number: true,
+                total: true,
+                payment_method: true,
+
+                customer: {
+                  select: {
+                    id: true,
+                    name: true,
+                    phone: true,
+                  },
+                },
+
+                terminal: {
+                  select: {
+                    id: true,
+                    terminal_code: true,
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+
+          orderBy: [
+            { created_at: 'desc' },
+            { id: 'desc' },
+          ],
+
+          skip:
+            (dto.page - 1) *
+            dto.page_size,
+
+          take: dto.page_size,
+        }),
+      ])
+
+    return {
+      items,
+      total,
+      page: dto.page,
+      page_size: dto.page_size,
+      total_pages: Math.max(
+        1,
+        Math.ceil(total / dto.page_size),
+      ),
+      server_time:
+        new Date().toISOString(),
+    }
   }
 }

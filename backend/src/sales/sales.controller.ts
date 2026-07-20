@@ -9,6 +9,7 @@ import { CreateReturnDto } from './dto/create-return.dto';
 import { ListSalesDto } from './dto/list-sales.dto';
 import { resolveBranchScope } from '../auth/branch-access';
 import { TerminalsService } from '../terminals/terminals.service';
+import { ListReturnsDto } from './dto/list-returns.dto'
 
 @Controller()
 export class SalesController {
@@ -16,7 +17,7 @@ export class SalesController {
     private svc: SalesService,
     private pdfService: InvoicePdfService,
     private terminals: TerminalsService,
-  ) {}
+  ) { }
 
   @Roles('owner', 'branch_manager')
   @Get('sales')
@@ -78,7 +79,7 @@ export class SalesController {
   @Header('Content-Type', 'application/pdf')
   async getPdf(
     @Param('id') id: string,
-    @Query('lang') lang: 'ar'|'en' = 'ar',
+    @Query('lang') lang: 'ar' | 'en' = 'ar',
     @Req() req: Request & { user: AuthenticatedUser },
     @Res() res: Response,
   ) {
@@ -86,5 +87,25 @@ export class SalesController {
     const buf = await this.pdfService.render(invoice, lang);
     res.set({ 'Content-Disposition': `inline; filename="bold-${invoice.invoice_number}-${lang}.pdf"` });
     res.send(buf);
+  }
+
+  @Roles('owner', 'branch_manager')
+  @Get('returns')
+  listReturns(
+    @Query() dto: ListReturnsDto,
+    @Req() req: Request & {
+      user: AuthenticatedUser
+    },
+  ) {
+    const branchId = resolveBranchScope(
+      req.user,
+      dto.branch_id,
+      ['owner'],
+    )
+
+    return this.svc.listReturns(
+      dto,
+      branchId,
+    )
   }
 }
