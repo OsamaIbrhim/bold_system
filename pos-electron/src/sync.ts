@@ -1,129 +1,236 @@
 import { api } from './api'
+import { bold, BoldBridge } from './electron'
+import { SyncState } from './types'
 
-export type SyncState = {
-  device_id: string
-  terminal_name: string
-  app_version: string
-  sync_status: 'never'|'syncing'|'success'|'error'|'offline'
-  last_sync_at: string|null
-  last_error: string|null
-  pending_count: number
-  sync_cursor?: string|null
-}
+type SyncBridge = Pick<
+  BoldBridge,
+  | 'sync_get_status'
+  | 'sync_set_status'
+  | 'sync_get_outbox'
+  | 'sync_mark_sent'
+  | 'sync_apply_pull'
+>
 
-type SyncBridge = {
-  sync_get_outbox(): Promise<any[]>
-  sync_mark_sent(ids:string[]): Promise<any>
-  sync_apply_pull(data:any): Promise<any>
-  sync_get_status(): Promise<SyncState>
-  sync_set_status(status:Partial<SyncState>): Promise<any>
-}
+type SyncApi = Pick<
+  typeof api,
+  'sale' | 'pull' | 'heartbeat'
+>
 
-type SyncApi = {
-  sale(payload:any): Promise<any>
-  pull(branchId:string, cursor?:string|null): Promise<any>
-  heartbeat(payload:any): Promise<any>
-}
-
-const bridge = () => (window as any).bold as SyncBridge
 let activeSync: Promise<SyncState> | null = null
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error || 'Unknown synchronization error')
+  return error instanceof Error
+    ? error.message
+    : String(
+        error || 'Unknown synchronization error',
+      )
 }
 
-async function publishHeartbeat(client: SyncApi, state: SyncState) {
+async function publishHeartbeat(
+  client: SyncApi,
+  state: SyncState,
+) {
   return client.heartbeat({
     device_id: state.device_id,
     name: state.terminal_name,
     app_version: state.app_version,
     sync_status: state.sync_status,
-    last_sync_at: state.last_sync_at || undefined,
-    last_error: state.last_error || undefined,
+    last_sync_at:
+      state.last_sync_at || undefined,
+    last_error:
+      state.last_error || undefined,
     pending_count: state.pending_count,
   })
 }
 
-export async function performSync(branchId: string, local: SyncBridge, client: SyncApi): Promise<SyncState> {
+export async function performSync(
+  branchId: string,
+  local: SyncBridge,
+  client: SyncApi,
+): Promise<SyncState> {
   let state = await local.sync_get_status()
-  await local.sync_set_status({ sync_status: 'syncing', last_error: null })
-  state = { ...state, sync_status: 'syncing', last_error: null }
+
+  await local.sync_set_status({
+    sync_status: 'syncing',
+    last_error: null,
+  })
+
+  state = {
+    ...state,
+    sync_status: 'syncing',
+    last_error: null,
+  }
+
   await publishHeartbeat(client, state)
 
   const outbox = await local.sync_get_outbox()
+
   for (const item of outbox) {
     try {
-      await client.sale(JSON.parse(item.payload))
+      const stored = JSON.parse(item.payload)
+
+      // إزالة الحقول المحلية التي لا يقبلها Backend DTO
+      const {
+        local_total: _localTotal,
+        ...payload
+      } = stored
+
+      await client.sale(payload)
       await local.sync_mark_sent([item.id])
     } catch (error) {
-      const message = errorMessage(error)
-      const current = await local.sync_get_status()
-      const failed = { ...state, sync_status: 'error' as const, last_error: message, pending_count: current.pending_count }
+      const current =
+        await local.sync_get_status()
+
+      const failed: SyncState = {
+        ...state,
+        sync_status: 'error',
+        last_error: errorMessage(error),
+        pending_count: current.pending_count,
+      }
+
       await local.sync_set_status(failed)
-      await publishHeartbeat(client, failed).catch(() => undefined)
+
+      await publishHeartbeat(
+        client,
+        failed,
+      ).catch(() => undefined)
+
       return failed
     }
   }
 
-  // A cashier can complete another local sale while network requests are in
-  // flight. Re-check before pulling so that snapshot stock never overwrites a
-  // reservation created after the first outbox read.
-  const remaining = await local.sync_get_outbox()
+  // قد يضيف الكاشير عملية بيع جديدة أثناء
+  // وجود طلبات المزامنة قيد التنفيذ.
+  const remaining =
+    await local.sync_get_outbox()
+
   if (remaining.length) {
-    const pending = {
+    const pending: SyncState = {
       ...state,
-      sync_status: 'error' as const,
-      last_error: 'A new sale was queued during synchronization; retrying before the next snapshot.',
+      sync_status: 'error',
+      last_error:
+        'تمت إضافة عملية جديدة أثناء المزامنة؛ ستُرسل قبل تحديث المخزون.',
       pending_count: remaining.length,
     }
+
     await local.sync_set_status(pending)
-    await publishHeartbeat(client, pending).catch(() => undefined)
+
+    await publishHeartbeat(
+      client,
+      pending,
+    ).catch(() => undefined)
+
     return pending
   }
 
   let cursor = state.sync_cursor || null
   let response: any
   let pages = 0
+
   do {
-    response = await client.pull(branchId, cursor)
+    response = await client.pull(
+      branchId,
+      cursor,
+    )
+
     await local.sync_apply_pull(response)
+
     cursor = response.cursor ?? cursor
     pages += 1
-  } while (response.has_more && pages < 10)
-  const completed = {
+  } while (
+    response.has_more &&
+    pages < 10
+  )
+
+  const completed: SyncState = {
     ...state,
-    sync_status: 'success' as const,
-    last_sync_at: response.server_time || new Date().toISOString(),
+    sync_status: 'success',
+    last_sync_at:
+      response.server_time ||
+      new Date().toISOString(),
     last_error: null,
     pending_count: 0,
     sync_cursor: cursor,
   }
+
   await local.sync_set_status(completed)
   await publishHeartbeat(client, completed)
+
   return completed
 }
 
-export function syncLoop(branchId: string, onStatus?: (state:SyncState)=>void): Promise<SyncState> {
-  if (activeSync) return activeSync
-  activeSync = performSync(branchId, bridge(), api).catch(async(error) => {
-    const local = bridge()
-    const previous = await local.sync_get_status()
-    const offline = {
-      ...previous,
-      sync_status: 'offline' as const,
-      last_error: errorMessage(error),
-    }
-    await local.sync_set_status(offline)
-    return offline
-  }).then((state) => { onStatus?.(state); return state }).finally(() => { activeSync = null })
+export function syncLoop(
+  branchId: string,
+  onStatus?: (state: SyncState) => void,
+): Promise<SyncState> {
+  if (activeSync) {
+    return activeSync
+  }
+
+  activeSync = performSync(
+    branchId,
+    bold,
+    api,
+  )
+    .catch(async error => {
+      const previous =
+        await bold.sync_get_status()
+
+      const offline: SyncState = {
+        ...previous,
+        sync_status: 'offline',
+        last_error: errorMessage(error),
+      }
+
+      await bold.sync_set_status(offline)
+
+      return offline
+    })
+    .then(state => {
+      onStatus?.(state)
+      return state
+    })
+    .finally(() => {
+      activeSync = null
+    })
+
   return activeSync
 }
 
-export function startSync(branchId: string, onStatus?: (state:SyncState)=>void) {
-  bridge().sync_get_status().then(state => onStatus?.(state))
+export function startSync(
+  branchId: string,
+  onStatus?: (state: SyncState) => void,
+) {
+  bold
+    .sync_get_status()
+    .then(state => onStatus?.(state))
+
   syncLoop(branchId, onStatus)
-  const timer = setInterval(()=>syncLoop(branchId, onStatus), 15000)
-  const online = () => syncLoop(branchId, onStatus)
-  window.addEventListener('online', online)
-  return () => { clearInterval(timer); window.removeEventListener('online', online) }
+
+  const timer = setInterval(
+    () => syncLoop(branchId, onStatus),
+    15_000,
+  )
+
+  const online = () => {
+    syncLoop(branchId, onStatus)
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener(
+      'online',
+      online,
+    )
+  }
+
+  return () => {
+    clearInterval(timer)
+
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(
+        'online',
+        online,
+      )
+    }
+  }
 }

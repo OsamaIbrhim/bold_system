@@ -1,19 +1,7 @@
+import { DeviceCredential, Invoice, Session, Shift } from './types'
+import { bold } from './electron'
+
 const API = (typeof localStorage !== 'undefined' && localStorage.getItem('bold_api')) || 'http://localhost:3000/api/v1'
-const bold = typeof window !== 'undefined' ? (window as any).bold : undefined
-
-export type Session = {
-  access_token: string
-  refresh_token: string
-  user: { id: string, name: string, role: string, branch_id: string | null }
-}
-
-export type DeviceCredential = {
-  device_id: string
-  device_token: string
-  branch_id: string
-  terminal_id: string
-  terminal_code: string
-}
 
 type PersistedAuth = { session: Session, offline_valid_until: string }
 type SecureState = { auth?: PersistedAuth, device?: DeviceCredential }
@@ -23,6 +11,7 @@ export class ApiError extends Error {
   field?: string
   requestId?: string
   status?: number
+  details: string[]
 
   constructor(payload: any = {}, status?: number) {
     super(payload.message_ar || payload.message || 'تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مرة أخرى.')
@@ -31,6 +20,7 @@ export class ApiError extends Error {
     this.field = payload.field
     this.requestId = payload.request_id
     this.status = status
+    this.details = Array.isArray(payload.details) ? payload.details.map(String) : []
   }
 }
 
@@ -61,10 +51,7 @@ async function parseError(response: Response) {
 
 async function saveSession(value: Session) {
   session = value
-  persistedAuth = {
-    session: value,
-    offline_valid_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-  }
+  persistedAuth = { session: value, offline_valid_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() }
   await bold.secure_set_auth(persistedAuth)
 }
 
@@ -98,7 +85,7 @@ async function refreshSession() {
   return refreshPromise
 }
 
-async function request(path: string, init: RequestInit = {}, retry = true) {
+async function request<T=any>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${API}${path}`, {
@@ -115,9 +102,7 @@ async function request(path: string, init: RequestInit = {}, retry = true) {
   } catch {
     throw new ApiError({ code: 'NETWORK_ERROR', message_ar: 'لا يمكن الوصول إلى الخادم. تحقق من الإنترنت أو عنوان الخادم.' })
   }
-  if (response.status === 401 && retry && await refreshSession()) {
-    return request(path, init, false)
-  }
+  if (response.status === 401 && retry && await refreshSession()) return request<T>(path, init, false)
   if (!response.ok) {
     const error = await parseError(response)
     if (response.status === 401 && !['/auth/me', '/auth/login'].includes(path)) await clearSession()
@@ -130,9 +115,6 @@ async function request(path: string, init: RequestInit = {}, retry = true) {
 export const api = {
   base: API,
   bootstrap: async () => {
-    // Remove credentials written by pre-safeStorage releases. They are never
-    // trusted or migrated because they may contain the literal branch value
-    // "undefined" and renderer storage is not an acceptable secret store.
     for (const key of ['token', 'refresh_token', 'user', 'branch_id']) localStorage.removeItem(key)
     const secure = await bold.secure_get() as SecureState
     if (validDevice(secure.device)) device = secure.device
@@ -140,26 +122,20 @@ export const api = {
     if (validAuth(secure.auth)) {
       persistedAuth = secure.auth
       session = secure.auth.session
-      // The enrolled terminal owns the branch. Never trust a stale cashier
-      // session for a different branch.
       if (!device || session.user.branch_id !== device.branch_id) {
         await clearSession()
       } else {
         try {
-          const user = await request('/auth/me')
+          const user = await request<any>('/auth/me')
           session.user = { ...session.user, ...user }
           await saveSession(session)
         } catch (error) {
           const offlineUntil = new Date(persistedAuth?.offline_valid_until || 0).getTime()
-          if (!(error instanceof ApiError && error.code === 'NETWORK_ERROR' && offlineUntil > Date.now())) {
-            await clearSession()
-          }
+          if (!(error instanceof ApiError && error.code === 'NETWORK_ERROR' && offlineUntil > Date.now())) await clearSession()
         }
       }
-    } else if (secure.auth) {
-      await bold.secure_set_auth(null)
-    }
-    return { device, user: session?.user || null, offline: !!session && !navigator.onLine }
+    } else if (secure.auth) await bold.secure_set_auth(null)
+    return { device, session, user: session?.user || null, offline: !!session && !navigator.onLine }
   },
   enroll: async (enrollmentCode: string, terminal: { device_id:string, terminal_name:string, app_version:string }) => {
     let response: Response
@@ -203,13 +179,9 @@ export const api = {
     }
     if (!response.ok) throw await parseError(response)
     const value: Session = await response.json()
-    if (!['branch_manager', 'cashier'].includes(value.user.role)) {
-      throw new ApiError({ code: 'POS_ROLE_DENIED', message_ar: 'استخدم حساب كاشير أو مدير فرع في نقطة البيع.' })
-    }
+    if (!['branch_manager', 'cashier'].includes(value.user.role)) throw new ApiError({ code: 'POS_ROLE_DENIED', message_ar: 'استخدم حساب كاشير أو مدير فرع في نقطة البيع.' })
     if (!value.user.branch_id) throw new ApiError({ code: 'USER_BRANCH_REQUIRED', message_ar: 'يجب ربط حساب الكاشير بفرع من لوحة الإدارة.' })
-    if (!device || value.user.branch_id !== device.branch_id) {
-      throw new ApiError({ code: 'USER_BRANCH_MISMATCH', message_ar: 'حساب الكاشير تابع لفرع مختلف عن هذا الجهاز.' })
-    }
+    if (!device || value.user.branch_id !== device.branch_id) throw new ApiError({ code: 'USER_BRANCH_MISMATCH', message_ar: 'حساب الكاشير تابع لفرع مختلف عن هذا الجهاز.' })
     await saveSession(value)
     return value
   },
@@ -217,21 +189,29 @@ export const api = {
     const refreshToken = session?.refresh_token
     if (refreshToken) {
       await fetch(`${API}/auth/logout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: refreshToken }),
       }).catch(() => undefined)
     }
     await clearSession()
   },
-  search: (q: string, branch_id?: string) =>
-    request(`/products/search?q=${encodeURIComponent(q)}${branch_id ? `&branch_id=${branch_id}` : ''}`).catch(() => []),
-  sale: (payload: any) => request('/pos/sale', { method: 'POST', body: JSON.stringify(payload) }),
-  pricing: (variant_id: string) => request('/pricing/calculate', { method: 'POST', body: JSON.stringify({ variant_id }) }),
-  customerLookup: (phone: string) => request(`/customers/lookup?phone=${encodeURIComponent(phone)}`),
-  customerLoyalty: (phone: string) => request(`/customers/loyalty?phone=${encodeURIComponent(phone)}`),
-  invoiceLookup: (reference: string) => request(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
-  returnSale: (payload: any) => request('/pos/return', { method: 'POST', body: JSON.stringify(payload) }),
-  pull: (branch_id: string, cursor?: string | null) => request(`/sync/pull?branch_id=${encodeURIComponent(branch_id)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
-  heartbeat: (payload: any) => request('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
+  search: (q: string, branchId?: string) => request<any[]>(`/products/search?q=${encodeURIComponent(q)}${branchId ? `&branch_id=${branchId}` : ''}`),
+  sale: (payload: any) => request<any>('/pos/sale', { method: 'POST', body: JSON.stringify(payload) }),
+  pricing: (variantId: string) => request<any>('/pricing/calculate', { method: 'POST', body: JSON.stringify({ variant_id: variantId }) }),
+  customerLookup: (phone: string) => request<any>(`/customers/lookup?phone=${encodeURIComponent(phone)}`),
+  customerLoyalty: (phone: string) => request<any>(`/customers/loyalty?phone=${encodeURIComponent(phone)}`),
+  customers: (q: string) => request<any[]>(`/customers?q=${encodeURIComponent(q)}`),
+  createCustomer: (payload: any) => request<any>('/customers', { method: 'POST', body: JSON.stringify(payload) }),
+  listSales: (params: Record<string,string|number|undefined>) => {
+    const query = new URLSearchParams()
+    Object.entries(params).forEach(([key,value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+    return request<{items:Invoice[],total:number,total_pages:number}>(`/sales?${query.toString()}`)
+  },
+  getSale: (id: string) => request<Invoice>(`/sales/${encodeURIComponent(id)}`),
+  invoiceLookup: (reference: string) => request<any>(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
+  returnSale: (payload: any) => request<any>('/pos/return', { method: 'POST', body: JSON.stringify(payload) }),
+  currentShift: (branchId: string) => request<Shift | null>(`/shifts/current?branch_id=${encodeURIComponent(branchId)}`),
+  openShift: (branchId: string, openingCash: number) => request<Shift>('/shifts/open', { method: 'POST', body: JSON.stringify({ branch_id: branchId, opening_cash: openingCash }) }),
+  closeShift: (id: string, closingCash: number) => request<Shift>(`/shifts/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({ closing_cash: closingCash }) }),
+  pull: (branchId: string, cursor?: string | null) => request<any>(`/sync/pull?branch_id=${encodeURIComponent(branchId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
+  heartbeat: (payload: any) => request<any>('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
 }
