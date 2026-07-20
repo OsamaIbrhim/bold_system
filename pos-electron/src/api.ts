@@ -215,10 +215,10 @@ export const api = {
   customerLoyalty: (phone: string) => request<any>(`/customers/loyalty?phone=${encodeURIComponent(phone)}`),
   customers: (q: string) => request<any[]>(`/customers?q=${encodeURIComponent(q)}`),
   createCustomer: (payload: any) => request<any>('/customers', { method: 'POST', body: JSON.stringify(payload) }),
-  listSales: (params: Record<string,string|number|undefined>) => {
+  listSales: (params: Record<string, string | number | undefined>) => {
     const query = new URLSearchParams()
-    Object.entries(params).forEach(([key,value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
-    return request<{items:Invoice[],total:number,total_pages:number}>(`/sales?${query.toString()}`)
+    Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+    return request<{ items: Invoice[], total: number, total_pages: number }>(`/sales?${query.toString()}`)
   },
   getSale: (id: string) => request<Invoice>(`/sales/${encodeURIComponent(id)}`),
   invoiceLookup: (reference: string) => request<any>(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
@@ -228,4 +228,31 @@ export const api = {
   closeShift: (id: string, closingCash: number) => request<Shift>(`/shifts/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({ closing_cash: closingCash }) }),
   pull: (branchId: string, cursor?: string | null) => request<any>(`/sync/pull?branch_id=${encodeURIComponent(branchId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
   heartbeat: (payload: any) => request<any>('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
+  listReturns: (
+    params: Record<
+      string,
+      string | number | undefined
+    >,
+  ) => {
+    const query = new URLSearchParams()
+
+    Object.entries(params).forEach(
+      ([key, value]) => {
+        if (
+          value !== undefined &&
+          value !== ''
+        ) {
+          query.set(key, String(value))
+        }
+      },
+    )
+
+    return request<{
+      items: ReturnRecord[]
+      total: number
+      total_pages: number
+    }>(
+      `/returns?${query.toString()}`,
+    )
+  },
 }

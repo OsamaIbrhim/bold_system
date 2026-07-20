@@ -142,28 +142,21 @@ async function initDb() {
       value TEXT NOT NULL
     );
   `)
-  // Forward-compatible local schema migration for databases created before
-  // tax snapshots were synced with the price book.
-  try {
-    db.exec(`ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`)
-  } catch { }
-  try {
-    db.exec(`ALTER TABLE products ADD COLUMN name_ar TEXT`)
-  } catch { }
-  if (!getMeta('device_id')) setMeta('device_id', randomUUID())
-  if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
-  if (!getMeta('sync_status')) setMeta('sync_status', 'never')
+  // Forward-compatible migrations for databases created by older releases.
   for (const migration of [
     `ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`,
     `ALTER TABLE products ADD COLUMN name_ar TEXT`,
     `ALTER TABLE sales_local ADD COLUMN payment_method TEXT`,
     `ALTER TABLE sales_local ADD COLUMN customer_phone TEXT`,
   ]) {
-    try { db.exec(migration) } catch { }
+    try { db.exec(migration) } catch {}
   }
+
   if (!getMeta('device_id')) setMeta('device_id', randomUUID())
   if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
   if (!getMeta('sync_status')) setMeta('sync_status', 'never')
+
+  saveDb()
 }
 
 function createWindow() {
@@ -191,241 +184,6 @@ function createWindow() {
 app.whenReady().then(async () => { await initDb(); createWindow() })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
-})
-
-ipcMain.handle('pos:search', (_e, qstr: string) =>
-  q(
-    `SELECT * FROM products WHERE barcode_ean13 = ? OR barcode_internal = ? OR sku LIKE ? LIMIT 20`,
-    [qstr, qstr, `%${qstr}%`],
-  ),
-)
-
-ipcMain.handle('pos:stock', (_e, variant_id: string) =>
-  get(`SELECT qty FROM stock WHERE variant_id = ?`, [variant_id])?.qty || 0,
-)
-
-ipcMain.handle('pos:sale', (_e, sale: any) => {
-  const sync_id = sale.sync_id || require('crypto').randomUUID()
-  const existing = get(
-    `SELECT sync_id, invoice_number, total FROM sales_local WHERE sync_id = ?`,
-    [sync_id],
-  )
-  if (existing) return { sync_id, ok: true, replayed: true }
-  const { local_total, ...command } = sale
-  try {
-    db.exec('BEGIN IMMEDIATE TRANSACTION')
-    for (const it of sale.items || []) {
-      run(
-        `UPDATE stock SET qty = qty - ? WHERE variant_id = ? AND qty >= ?`,
-        [it.qty, it.variant_id, it.qty],
-      )
-      if (db.getRowsModified() !== 1) {
-        throw new Error(`Insufficient local stock for ${it.variant_id}`)
-      }
-    }
-    run(
-      `INSERT INTO sales_local (sync_id, invoice_number, total, created_at) VALUES (?,?,?,?)`,
-      [sync_id, sale.invoice_number || 'LOCAL-' + Date.now(), local_total || 0, new Date().toISOString()],
-    )
-    run(
-      `INSERT INTO outbox (id, type, payload, sync_status, created_at) VALUES (?,?,?,?,?)`,
-      [sync_id, 'sale', JSON.stringify({ ...command, sync_id }), 'pending', new Date().toISOString()],
-    )
-    db.exec('COMMIT')
-    saveDb()
-    return { sync_id, ok: true }
-  } catch (error) {
-    try { db.exec('ROLLBACK') } catch { }
-    throw error
-  }
-})
-
-ipcMain.handle('sync:get_outbox', () =>
-  q(`SELECT * FROM outbox WHERE sync_status='pending'`),
-)
-
-ipcMain.handle('sync:mark_sent', (_e, ids: string[]) => {
-  for (const id of ids) {
-    run(`UPDATE outbox SET sync_status='sent' WHERE id = ?`, [id])
-  }
-  saveDb()
-  return { ok: true }
-})
-
-ipcMain.handle('sync:get_status', () => ({
-  device_id: getMeta('device_id'),
-  terminal_name: getMeta('terminal_name'),
-  app_version: app.getVersion(),
-  sync_status: getMeta('sync_status') || 'never',
-  last_sync_at: getMeta('last_sync_at') || null,
-  last_error: getMeta('last_error') || null,
-  pending_count: Number(
-    get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status='pending'`)?.count || 0,
-  ),
-  sync_cursor: getMeta('sync_cursor') || null,
-}))
-
-ipcMain.handle('sync:set_status', (_e, status: any) => {
-  if (status.sync_status) setMeta('sync_status', String(status.sync_status))
-  if (status.last_sync_at) setMeta('last_sync_at', String(status.last_sync_at))
-  setMeta('last_error', status.last_error ? String(status.last_error).slice(0, 500) : '')
-  saveDb()
-  return { ok: true }
-})
-
-ipcMain.handle('secure:get', () => readSecureState())
-
-ipcMain.handle('secure:set_auth', (_e, auth: any) => {
-  const state = readSecureState()
-  if (auth) state.auth = auth
-  else delete state.auth
-  writeSecureState(state)
-  return { ok: true }
-})
-
-ipcMain.handle('secure:set_device', (_e, device: SecureState['device'] | null) => {
-  const state = readSecureState()
-  if (device) state.device = device
-  else delete state.device
-  writeSecureState(state)
-  return { ok: true }
-})
-
-ipcMain.handle('sync:apply_pull', (_e, data: any) => {
-  try {
-    db.exec('BEGIN IMMEDIATE TRANSACTION')
-    if (data.reset_products) db.exec('DELETE FROM products')
-    if (data.reset_stock) db.exec('DELETE FROM stock')
-    for (const id of data.deleted_variant_ids || []) {
-      run(`DELETE FROM products WHERE id = ?`, [id])
-      run(`DELETE FROM stock WHERE variant_id = ?`, [id])
-    }
-    for (const p of data.products || []) {
-      run(
-        `INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-        [
-          p.id, p.sku, p.name_en || '', p.name_ar || '',
-          p.barcode_ean13 || null, p.barcode_internal || null,
-          p.size || null, p.color || null, 0,
-          Number(p.selling_price || 0), Number(p.unit_tax || 0),
-        ],
-      )
-    }
-    for (const s of data.stock || []) {
-      run(`INSERT OR REPLACE INTO stock (variant_id, qty) VALUES (?,?)`, [
-        s.variant_id,
-        s.qty_on_hand || 0,
-      ])
-    }
-    if (data.cursor !== undefined) setMeta('sync_cursor', String(data.cursor))
-    db.exec('COMMIT')
-    saveDb()
-    return { ok: true }
-  } catch (error) {
-    try { db.exec('ROLLBACK') } catch { }
-    throw error
-  }
-})
-
-// ESC/POS Thermal Receipt – 80mm – HTML print, no native modules
-// Cash drawer kick: most thermal printers kick the drawer automatically on print – enable in Windows printer preferences "Cash drawer: Open before printing"
-// Software kick fallback: ESC p 0 25 250
-ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') => {
-  const isAr = lang === 'ar'
-  const escapeHtml = (value: unknown) =>
-    String(value ?? '')
-      .replaceAll('&', '&')
-      .replaceAll('<', '<')
-      .replaceAll('>', '>')
-      .replaceAll('"', '"')
-      .replaceAll("'", '&#039;')
-  const itemsHtml = (invoice.items || [])
-    .map(
-      (it: any) => `
-    <tr>
-      <td>${escapeHtml(it.name || it.sku)}</td>
-      <td>${Number(it.qty)}</td>
-      <td>${Number(it.unit_price)}</td>
-      <td>${(Number(it.unit_price) * Number(it.qty)).toFixed(2)}</td>
-    </tr>`,
-    )
-    .join('')
-  const html = `<!doctype html>
-<html lang="${isAr ? 'ar' : 'en'}" dir="${isAr ? 'rtl' : 'ltr'}">
-<head>
-  <meta charset="utf-8">
-  <style>
-    @page { size: 80mm auto; margin: 2mm; }
-    body { font-family: 'Cairo', Arial, sans-serif; width: 72mm; margin:0; font-size: 12px; }
-    h2 { text-align:center; margin:4px 0; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { padding:2px 0; font-size:11px; }
-    th { border-bottom:1px dashed #000; }
-    .totals { margin-top:6px; border-top:1px dashed #000; padding-top:4px; }
-    .center { text-align:center; }
-    .small { font-size:10px; }
-  </style>
-</head>
-<body>
-  <h2>Bold</h2>
-  <div class="center small">
-    Men's Wear<br/>
-    ${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br/>
-    ${new Date().toLocaleString(isAr ? 'ar-EG' : 'en-GB')}
-  </div>
-  <hr>
-  <table>
-    <thead>
-      <tr>
-        <th>${isAr ? 'الصنف' : 'Item'}</th>
-        <th>${isAr ? 'ك' : 'Q'}</th>
-        <th>${isAr ? 'السعر' : 'Price'}</th>
-        <th>${isAr ? 'الإجمالي' : 'Total'}</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${itemsHtml}
-    </tbody>
-  </table>
-  <div class="totals">
-    ${isAr ? 'الإجمالي' : 'Total'}: <b>${Number(invoice.total || 0).toFixed(2)} ${isAr ? 'ج' : 'EGP'}</b><br>
-    <span class="small">${isAr ? 'شامل الضريبة' : 'VAT included'}</span>
-  </div>
-  <hr>
-  <div class="center small">
-    ${isAr ? 'سياسة الإرجاع: 14 يوم بحالة الشراء الأصلية' : 'Returns: 14 days original condition'}<br>
-    شكراً لتسوقكم في Bold – Thank you
-  </div>
-</body>
-</html>`
-  const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: false } })
-  try {
-    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-    const result = await new Promise<{ success: boolean, reason?: string }>((resolve) => {
-      let settled = false
-      const finish = (success: boolean, reason?: string) => {
-        if (settled) return
-        settled = true
-        resolve({ success, reason })
-      }
-      printWin.once('closed', () => finish(false, 'Print window was closed'))
-      printWin.webContents.print({ silent: false, printBackground: false }, (success, reason) =>
-        finish(success, reason),
-      )
-    })
-    if (!printWin.isDestroyed()) printWin.destroy()
-    if (!result.success) return { ok: false, printed: false, reason: result.reason || 'Print cancelled' }
-  } catch (error: any) {
-    if (!printWin.isDestroyed()) printWin.destroy()
-    return { ok: false, printed: false, reason: error?.message || 'Unable to print' }
-  }
-  // Cash drawer kick – if printer is configured to kick on print, hardware does it automatically.
-  // Software fallback (ESC/POS): 0x1b 0x70 0x00 0x19 0xfa – would need raw USB – omitted for no-native build.
-  // For now: log it – enable "Cash Drawer – Open before printing" in Windows Printer Preferences.
-  console.log(
-    '[CASH DRAWER] Kick – enable "Open cash drawer before printing" in your 80mm printer driver',
-  )
-  return { ok: true, printed: true }
 })
 
 ipcMain.handle('pos:search', (_e, qstr: string) => {
@@ -593,10 +351,10 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') =
   const isAr = lang === 'ar'
   const escapeHtml = (value: unknown) =>
     String(value ?? '')
-      .replaceAll('&', '&')
-      .replaceAll('<', '<')
-      .replaceAll('>', '>')
-      .replaceAll('"', '"')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
       .replaceAll("'", '&#039;')
   const itemsHtml = (invoice.items || [])
     .map(
