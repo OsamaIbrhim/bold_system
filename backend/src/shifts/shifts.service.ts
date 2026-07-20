@@ -6,12 +6,12 @@ import { assertBranchAccess } from '../auth/branch-access';
 
 @Injectable()
 export class ShiftsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async open(branch_id: string, actor: AuthenticatedUser, opening_cash = 0) {
     assertBranchAccess(actor, branch_id);
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${branch_id}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${branch_id}))`;
       const branch = await tx.branch.findFirst({ where: { id: branch_id, is_active: true }, select: { id: true } });
       if (!branch) throw new NotFoundException('Active branch not found');
       const existing = await tx.shift.findFirst({ where: { branch_id, status: 'open' } });
@@ -22,53 +22,110 @@ export class ShiftsService {
     });
   }
 
-  async close(id: string, actor: AuthenticatedUser, closing_cash: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const shift = await tx.shift.findUnique({ where: { id } });
-      if (!shift) throw new NotFoundException('Shift not found');
-      assertBranchAccess(actor, shift.branch_id);
-      if (shift.status !== 'open') throw new ConflictException('Shift is not open');
+  async close(
+    id: string,
+    actor: AuthenticatedUser,
+    closing_cash: number,
+  ) {
+    const shift = await this.prisma.shift.findUnique({
+      where: { id },
+    });
 
-      const closedAt = new Date();
-      const [cashSales, cashReturns] = await Promise.all([
-        tx.salesInvoice.aggregate({
-          where: {
-            branch_id: shift.branch_id,
-            status: 'completed',
-            payment_method: 'cash',
-            created_at: { gte: shift.opened_at, lt: closedAt },
-          },
-          _sum: { total: true },
-        }),
-        tx.return.aggregate({
-          where: {
-            branch_id: shift.branch_id,
-            status: 'completed',
-            created_at: { gte: shift.opened_at, lt: closedAt },
-            original_invoice: { payment_method: 'cash' },
-          },
-          _sum: { refund_total: true },
-        }),
-      ]);
-      const expectedCash = new Prisma.Decimal(shift.opening_cash)
-        .plus(cashSales._sum.total || 0)
-        .minus(cashReturns._sum.refund_total || 0)
-        .toDecimalPlaces(2);
-      const difference = new Prisma.Decimal(closing_cash).minus(expectedCash).toDecimalPlaces(2);
+    if (!shift) {
+      throw new NotFoundException('Shift not found');
+    }
 
-      const changed = await tx.shift.updateMany({
-        where: { id, status: 'open' },
-        data: {
-          closed_by: actor.sub,
-          closing_cash,
-          expected_cash: expectedCash,
-          difference,
-          closed_at: closedAt,
-          status: 'closed',
+    assertBranchAccess(actor, shift.branch_id);
+
+    if (shift.status !== 'open') {
+      throw new ConflictException('Shift is not open');
+    }
+
+    /*
+     * تثبيت وقت الإغلاق قبل حساب الإجماليات.
+     * أي عملية تحدث بعد هذا الوقت لن تدخل ضمن هذه الوردية.
+     */
+    const closedAt = new Date();
+
+    /*
+     * عمليات القراءة لا تحتاج Interactive Transaction.
+     * تشغيلها خارجها يمنع انتهاء transaction أثناء التجميع.
+     */
+    const [cashSales, cashReturns] = await Promise.all([
+      this.prisma.salesInvoice.aggregate({
+        where: {
+          branch_id: shift.branch_id,
+          status: 'completed',
+          payment_method: 'cash',
+          created_at: {
+            gte: shift.opened_at,
+            lt: closedAt,
+          },
         },
-      });
-      if (changed.count !== 1) throw new ConflictException('Shift was already closed');
-      return tx.shift.findUnique({ where: { id } });
+        _sum: {
+          total: true,
+        },
+      }),
+
+      this.prisma.return.aggregate({
+        where: {
+          branch_id: shift.branch_id,
+          status: 'completed',
+          created_at: {
+            gte: shift.opened_at,
+            lt: closedAt,
+          },
+          original_invoice: {
+            payment_method: 'cash',
+          },
+        },
+        _sum: {
+          refund_total: true,
+        },
+      }),
+    ]);
+
+    const expectedCash = new Prisma.Decimal(
+      shift.opening_cash,
+    )
+      .plus(cashSales._sum.total ?? 0)
+      .minus(cashReturns._sum.refund_total ?? 0)
+      .toDecimalPlaces(2);
+
+    const difference = new Prisma.Decimal(
+      closing_cash,
+    )
+      .minus(expectedCash)
+      .toDecimalPlaces(2);
+
+    /*
+     * updateMany بشرط status=open يجعل الإغلاق Atomic.
+     * لو ضغط المستخدم مرتين أو جهازان حاولا الإغلاق،
+     * محاولة واحدة فقط ستنجح.
+     */
+    const changed = await this.prisma.shift.updateMany({
+      where: {
+        id,
+        status: 'open',
+      },
+      data: {
+        closed_by: actor.sub,
+        closing_cash,
+        expected_cash: expectedCash,
+        difference,
+        closed_at: closedAt,
+        status: 'closed',
+      },
+    });
+
+    if (changed.count !== 1) {
+      throw new ConflictException(
+        'Shift was already closed',
+      );
+    }
+
+    return this.prisma.shift.findUnique({
+      where: { id },
     });
   }
 

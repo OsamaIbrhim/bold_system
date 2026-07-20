@@ -12,7 +12,7 @@ import { ListSalesDto } from './dto/list-sales.dto';
 export class SalesService {
   private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
 
-  constructor(private prisma: PrismaService, private pricing: PricingService) {}
+  constructor(private prisma: PrismaService, private pricing: PricingService) { }
 
   async listSales(dto: ListSalesDto, branchId?: string) {
     const q = dto.q.trim();
@@ -262,7 +262,7 @@ export class SalesService {
       requested.set(item.sales_invoice_item_id, (requested.get(item.sales_invoice_item_id) || 0) + item.qty);
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const original = await tx.salesInvoice.findUnique({
         where: { id: dto.original_invoice_id },
         include: { items: true },
@@ -382,7 +382,14 @@ export class SalesService {
       }
 
       return returnRecord;
+    }, {
+      maxWait: 5_000,
+      timeout: 20_000,
     });
+
+    this.countCache.clear();
+
+    return result;
   }
 
   async findReturnableInvoice(reference: string, actor: AuthenticatedUser) {
