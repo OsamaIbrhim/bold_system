@@ -1,4 +1,4 @@
-import { DeviceCredential, Invoice, Session, Shift } from './types'
+import { DeviceCredential, Invoice, Session, Shift, ReturnRecord } from './types'
 import { bold } from './electron'
 
 const API = (typeof localStorage !== 'undefined' && localStorage.getItem('bold_api')) || 'http://localhost:3000/api/v1'
@@ -208,41 +208,24 @@ export const api = {
     }
     await clearSession()
   },
-  search: (q: string, branchId?: string) =>
-    request<any[]>(`/products/search?q=${encodeURIComponent(q)}${branchId ? `&branch_id=${branchId}` : ''}`),
-  sale: (payload: any) =>
-    request<any>('/pos/sale', { method: 'POST', body: JSON.stringify(payload) }),
-  pricing: (variantId: string) =>
-    request<any>('/pricing/calculate', { method: 'POST', body: JSON.stringify({ variant_id: variantId }) }),
-  customerLookup: (phone: string) =>
-    request<any>(`/customers/lookup?phone=${encodeURIComponent(phone)}`),
-  customerLoyalty: (phone: string) =>
-    request<any>(`/customers/loyalty?phone=${encodeURIComponent(phone)}`),
-  customers: (q: string) =>
-    request<any[]>(`/customers?q=${encodeURIComponent(q)}`),
-  createCustomer: (payload: any) =>
-    request<any>('/customers', { method: 'POST', body: JSON.stringify(payload) }),
-  listSales: (params: Record<string, string | number | undefined>) => {
+  search: (q: string, branchId?: string) => request<any[]>(`/products/search?q=${encodeURIComponent(q)}${branchId ? `&branch_id=${branchId}` : ''}`),
+  sale: (payload: any) => request<any>('/pos/sale', { method: 'POST', body: JSON.stringify(payload) }),
+  pricing: (variantId: string) => request<any>('/pricing/calculate', { method: 'POST', body: JSON.stringify({ variant_id: variantId }) }),
+  customerLookup: (phone: string) => request<any>(`/customers/lookup?phone=${encodeURIComponent(phone)}`),
+  customerLoyalty: (phone: string) => request<any>(`/customers/loyalty?phone=${encodeURIComponent(phone)}`),
+  customers: (q: string) => request<any[]>(`/customers?q=${encodeURIComponent(q)}`),
+  createCustomer: (payload: any) => request<any>('/customers', { method: 'POST', body: JSON.stringify(payload) }),
+  listSales: (params: Record<string,string|number|undefined>) => {
     const query = new URLSearchParams()
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== '') query.set(key, String(value))
-    })
-    return request<{ items: Invoice[], total: number, total_pages: number }>(`/sales?${query.toString()}`)
+    Object.entries(params).forEach(([key,value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+    return request<{items:Invoice[],total:number,total_pages:number}>(`/sales?${query.toString()}`)
   },
-  getSale: (id: string) =>
-    request<Invoice>(`/sales/${encodeURIComponent(id)}`),
-  invoiceLookup: (reference: string) =>
-    request<any>(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
-  returnSale: (payload: any) =>
-    request<any>('/pos/return', { method: 'POST', body: JSON.stringify(payload) }),
-  currentShift: (branchId: string) =>
-    request<Shift | null>(`/shifts/current?branch_id=${encodeURIComponent(branchId)}`),
-  openShift: (branchId: string, openingCash: number) =>
-    request<Shift>('/shifts/open', { method: 'POST', body: JSON.stringify({ branch_id: branchId, opening_cash: openingCash }) }),
-  closeShift: (id: string, closingCash: number) =>
-    request<Shift>(`/shifts/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({ closing_cash: closingCash }) }),
-  pull: (branchId: string, cursor?: string | null) =>
-    request<any>(`/sync/pull?branch_id=${encodeURIComponent(branchId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
-  heartbeat: (payload: any) =>
-    request<any>('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
+  getSale: (id: string) => request<Invoice>(`/sales/${encodeURIComponent(id)}`),
+  invoiceLookup: (reference: string) => request<any>(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
+  returnSale: (payload: any) => request<any>('/pos/return', { method: 'POST', body: JSON.stringify(payload) }),
+  currentShift: (branchId: string) => request<Shift | null>(`/shifts/current?branch_id=${encodeURIComponent(branchId)}`),
+  openShift: (branchId: string, openingCash: number) => request<Shift>('/shifts/open', { method: 'POST', body: JSON.stringify({ branch_id: branchId, opening_cash: openingCash }) }),
+  closeShift: (id: string, closingCash: number) => request<Shift>(`/shifts/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({ closing_cash: closingCash }) }),
+  pull: (branchId: string, cursor?: string | null) => request<any>(`/sync/pull?branch_id=${encodeURIComponent(branchId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
+  heartbeat: (payload: any) => request<any>('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
 }
