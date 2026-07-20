@@ -140,6 +140,25 @@ export type ReturnRecord = {
   status: 'completed' | 'voided'
   created_at: string
   created_by?: string | null
+  _count?: {
+    items: number
+  }
+  original_invoice?: {
+    id: string
+    invoice_number: string
+    total: number | string
+    payment_method: string
+    customer?: {
+      id: string
+      name?: string | null
+      phone: string
+      } | null
+    terminal?: {
+      id: string
+      terminal_code: string
+      name: string
+      } | null
+  }
 }
 
 export type ReturnedInvoiceItem = {

@@ -1,7 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../api'
 import { bold, LocalSale } from '../electron'
-import { DeviceCredential, Invoice, InvoiceItem, Session, Shift, SyncState } from '../types'
+import {
+  DeviceCredential,
+  Invoice,
+  InvoiceItem,
+  ReturnRecord,
+  Session,
+  Shift,
+  SyncState,
+} from '../types'
 import { FieldError, Modal } from '../components/ui'
 import { money, paymentLabel } from '../utils'
 
@@ -29,6 +37,8 @@ export function SalesScreen({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [serverSales, setServerSales] = useState<Invoice[]>([])
+  const [serverReturns, setServerReturns] = useState<ReturnRecord[]>([])
+  const [activeTab, setActiveTab] = useState<'sales' | 'returns'>('sales')
   const [localSales, setLocalSales] = useState<LocalSale[]>([])
   const [selected, setSelected] = useState<Invoice | null>(null)
   const [returnInvoice, setReturnInvoice] = useState<any>(null)
@@ -36,15 +46,44 @@ export function SalesScreen({
   const load = async () => {
     setLoading(true)
     setError('')
+
     try {
-      const [server, local] = await Promise.all([
-        api.listSales({ branch_id: device.branch_id, q: query, payment_method: method, page: 1, page_size: 50 }),
-        bold.local_sales().catch(() => []),
-      ])
-      setServerSales(server.items || [])
+      const [salesResult, returnsResult, local] =
+        await Promise.all([
+          api.listSales({
+            branch_id: device.branch_id,
+            q: query,
+            payment_method:
+              method || undefined,
+            page: 1,
+            page_size: 50,
+          }),
+
+          api.listReturns({
+            branch_id: device.branch_id,
+            q: query,
+            page: 1,
+            page_size: 50,
+          }),
+
+          bold.local_sales().catch(() => []),
+        ])
+
+      setServerSales(
+        salesResult.items || [],
+      )
+
+      setServerReturns(
+        returnsResult.items || [],
+      )
+
       setLocalSales(local)
     } catch (err) {
-      setError((err as Error).message)
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'تعذر تحميل العمليات',
+      )
     } finally {
       setLoading(false)
     }
@@ -122,6 +161,37 @@ export function SalesScreen({
             تحديث
           </button>
         </section>
+        <div className="sales-tabs">
+          <button
+            type="button"
+            className={
+              activeTab === 'sales'
+                ? 'active'
+                : ''
+            }
+            onClick={() =>
+              setActiveTab('sales')
+            }
+          >
+            الفواتير
+            <span>{serverSales.length}</span>
+          </button>
+
+          <button
+            type="button"
+            className={
+              activeTab === 'returns'
+                ? 'active'
+                : ''
+            }
+            onClick={() =>
+              setActiveTab('returns')
+            }
+          >
+            المرتجعات
+            <span>{serverReturns.length}</span>
+          </button>
+        </div>
         <div className="sales-filters">
           <input
             value={query}
@@ -129,16 +199,44 @@ export function SalesScreen({
             onKeyDown={(event) => {
               if (event.key === 'Enter') load()
             }}
-            placeholder="رقم الفاتورة أو هاتف العميل"
+            placeholder={
+              activeTab === 'sales'
+                ? 'رقم الفاتورة أو هاتف العميل'
+                : 'رقم المرتجع أو الفاتورة الأصلية أو هاتف العميل'
+            }
           />
-          <select value={method} onChange={(event) => setMethod(event.target.value)}>
-            <option value="">كل طرق الدفع</option>
-            <option value="cash">نقدي</option>
-            <option value="card">بطاقة</option>
-            <option value="instapay">InstaPay</option>
-            <option value="vodafone_cash">فودافون كاش</option>
-            <option value="installment">تقسيط</option>
-          </select>
+          {activeTab === 'sales' && (
+            <select
+              value={method}
+              onChange={event =>
+                setMethod(event.target.value)
+              }
+            >
+              <option value="">
+                كل طرق الدفع
+              </option>
+
+              <option value="cash">
+                نقدي
+              </option>
+
+              <option value="card">
+                بطاقة
+              </option>
+
+              <option value="instapay">
+                InstaPay
+              </option>
+
+              <option value="vodafone_cash">
+                فودافون كاش
+              </option>
+
+              <option value="installment">
+                تقسيط
+              </option>
+            </select>
+          )}
           <button className="button primary" onClick={load}>
             بحث
           </button>
@@ -156,61 +254,203 @@ export function SalesScreen({
             </button>
           </section>
         )}
-        <section className="data-card">
-          <table className="sales-table">
-            <thead>
-              <tr>
-                <th>رقم الفاتورة</th>
-                <th>الوقت</th>
-                <th>العميل</th>
-                <th>طريقة الدفع</th>
-                <th>الإجمالي</th>
-                <th>الجهاز</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {serverSales.map((invoice) => (
-                <tr key={invoice.id}>
-                  <td>
-                    <b>{invoice.invoice_number}</b>
-                    <small>{invoice.status}</small>
-                  </td>
-                  <td>{new Date(invoice.created_at).toLocaleString('ar-EG')}</td>
-                  <td>{invoice.customer?.name || invoice.customer?.phone || 'بدون عميل'}</td>
-                  <td>{paymentLabel(invoice.payment_method)}</td>
-                  <td>
-                    <b>{money(invoice.total)} ج</b>
-                  </td>
-                  <td>{invoice.terminal?.terminal_code || '—'}</td>
-                  <td>
-                    <div className="row-actions">
-                      <button onClick={() => openInvoice(invoice)}>تفاصيل</button>
-                      <button onClick={() => beginReturn(invoice)}>مرتجع</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {!loading && !serverSales.length && (
+        {activeTab === 'sales' && (
+          <section className="data-card">
+            <table className="sales-table">
+              <thead>
                 <tr>
-                  <td colSpan={7}>
-                    <div className="empty-state">
-                      <b>لا توجد فواتير مطابقة</b>
-                      <span>جرّب تغيير البحث أو طريقة الدفع.</span>
-                    </div>
-                  </td>
+                  <th>رقم الفاتورة</th>
+                  <th>الوقت</th>
+                  <th>العميل</th>
+                  <th>طريقة الدفع</th>
+                  <th>الإجمالي</th>
+                  <th>الجهاز</th>
+                  <th></th>
                 </tr>
-              )}
-              {loading && (
+              </thead>
+              <tbody>
+                {serverSales.map((invoice) => (
+                  <tr key={invoice.id}>
+                    <td>
+                      <b>{invoice.invoice_number}</b>
+                      <small>{invoice.status}</small>
+                      {!!invoice._count?.original_returns && (
+                        <small className="return-badge">
+                          {invoice._count.original_returns}
+                          {' '}
+                          مرتجع
+                        </small>
+                      )}
+                    </td>
+                    <td>{new Date(invoice.created_at).toLocaleString('ar-EG')}</td>
+                    <td>{invoice.customer?.name || invoice.customer?.phone || 'بدون عميل'}</td>
+                    <td>{paymentLabel(invoice.payment_method)}</td>
+                    <td>
+                      <b>{money(invoice.total)} ج</b>
+                    </td>
+                    <td>{invoice.terminal?.terminal_code || '—'}</td>
+                    <td>
+                      <div className="row-actions">
+                        <button onClick={() => openInvoice(invoice)}>تفاصيل</button>
+                        <button onClick={() => beginReturn(invoice)}>مرتجع</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!loading && !serverSales.length && (
+                  <tr>
+                    <td colSpan={7}>
+                      <div className="empty-state">
+                        <b>لا توجد فواتير مطابقة</b>
+                        <span>جرّب تغيير البحث أو طريقة الدفع.</span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {loading && (
+                  <tr>
+                    <td colSpan={7}>
+                      <div className="table-loading">جارٍ تحميل الفواتير…</div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </section>
+        )}
+        {activeTab === 'returns' && (
+          <section className="data-card">
+            <table className="sales-table">
+              <thead>
                 <tr>
-                  <td colSpan={7}>
-                    <div className="table-loading">جارٍ تحميل الفواتير…</div>
-                  </td>
+                  <th>رقم المرتجع</th>
+                  <th>الفاتورة الأصلية</th>
+                  <th>التاريخ</th>
+                  <th>العميل</th>
+                  <th>النوع</th>
+                  <th>عدد الأصناف</th>
+                  <th>المبلغ المسترد</th>
+                  <th>السبب</th>
+                  <th></th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </section>
+              </thead>
+
+              <tbody>
+                {serverReturns.map(record => (
+                  <tr key={record.id}>
+                    <td>
+                      <b>
+                        {record.return_invoice_number}
+                      </b>
+
+                      <small>
+                        {record.status === 'completed'
+                          ? 'مكتمل'
+                          : 'ملغي'}
+                      </small>
+                    </td>
+
+                    <td>
+                      <b>
+                        {record.original_invoice
+                          ?.invoice_number || '—'}
+                      </b>
+                    </td>
+
+                    <td>
+                      {new Date(
+                        record.created_at,
+                      ).toLocaleString('ar-EG')}
+                    </td>
+
+                    <td>
+                      {record.original_invoice
+                        ?.customer?.name ||
+                        record.original_invoice
+                          ?.customer?.phone ||
+                        'بدون عميل'}
+                    </td>
+
+                    <td>
+                      {record.is_partial
+                        ? 'مرتجع جزئي'
+                        : 'مرتجع كامل'}
+                    </td>
+
+                    <td>
+                      {record._count?.items || 0}
+                    </td>
+
+                    <td>
+                      <b>
+                        {money(
+                          record.refund_total,
+                        )}{' '}
+                        ج
+                      </b>
+                    </td>
+
+                    <td>
+                      {record.reason || '—'}
+                    </td>
+
+                    <td className='row-actions'>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const invoiceId =
+                            record.original_invoice?.id ||
+                            record.original_invoice_id
+
+                          api
+                            .getSale(invoiceId)
+                            .then(setSelected)
+                            .catch(error =>
+                              notify(
+                                error instanceof Error
+                                  ? error.message
+                                  : 'تعذر فتح الفاتورة',
+                                'error',
+                              ),
+                            )
+                        }}
+                      >
+                        عرض الفاتورة
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+
+                {!loading &&
+                  !serverReturns.length && (
+                    <tr>
+                      <td colSpan={9}>
+                        <div className="empty-state">
+                          <b>
+                            لا توجد مرتجعات مطابقة
+                          </b>
+
+                          <span>
+                            جرّب تغيير عبارة البحث.
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+
+                {loading && (
+                  <tr>
+                    <td colSpan={9}>
+                      <div className="table-loading">
+                        جارٍ تحميل المرتجعات…
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </section>
+        )}
       </main>
       <InvoiceModal
         invoice={selected}
@@ -545,9 +785,9 @@ function ReturnModal({
                   </td>
 
                   <td>
-                    <b>{Number(item.returnable_qty || 0)}</b>
-
-                    {Number(item.returnable_qty || 0) === 0 && (
+                    {item.returnable_qty ? (
+                      <b>{Number(item.returnable_qty)}</b>
+                    ) : (
                       <small className="return-complete-label">
                         تم إرجاع كامل الكمية
                       </small>
