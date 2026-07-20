@@ -1,14 +1,26 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res, Header, Headers, Req } from '@nestjs/common';
-import { Request, Response } from 'express';
-import { SalesService } from './sales.service';
-import { InvoicePdfService } from './invoice-pdf.service';
-import { Roles } from '../auth/roles.guard';
-import { CreateSaleDto } from './dto/create-sale.dto';
-import { AuthenticatedUser } from '../auth/authenticated-user';
-import { CreateReturnDto } from './dto/create-return.dto';
-import { ListSalesDto } from './dto/list-sales.dto';
-import { resolveBranchScope } from '../auth/branch-access';
-import { TerminalsService } from '../terminals/terminals.service';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Header,
+  Headers,
+  Param,
+  Post,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common'
+import { Request, Response } from 'express'
+import { SalesService } from './sales.service'
+import { InvoicePdfService } from './invoice-pdf.service'
+import { Roles } from '../auth/roles.guard'
+import { CreateSaleDto } from './dto/create-sale.dto'
+import { AuthenticatedUser } from '../auth/authenticated-user'
+import { CreateReturnDto } from './dto/create-return.dto'
+import { ListSalesDto } from './dto/list-sales.dto'
+import { resolveBranchScope } from '../auth/branch-access'
+import { TerminalsService } from '../terminals/terminals.service'
 import { ListReturnsDto } from './dto/list-returns.dto'
 
 @Controller()
@@ -17,25 +29,30 @@ export class SalesController {
     private svc: SalesService,
     private pdfService: InvoicePdfService,
     private terminals: TerminalsService,
-  ) { }
+  ) {}
 
-  @Roles('owner', 'branch_manager')
+  @Roles('owner', 'branch_manager', 'cashier')
   @Get('sales')
   listSales(
     @Query() dto: ListSalesDto,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    const branchId = resolveBranchScope(req.user, dto.branch_id, ['owner']);
-    return this.svc.listSales(dto, branchId);
+    const branchId = resolveBranchScope(
+      req.user,
+      dto.branch_id,
+      ['owner'],
+    )
+
+    return this.svc.listSales(dto, branchId)
   }
 
-  @Roles('owner', 'branch_manager')
+  @Roles('owner', 'branch_manager', 'cashier')
   @Get('sales/:id')
   getSale(
     @Param('id') id: string,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    return this.svc.getInvoice(id, req.user);
+    return this.svc.getInvoice(id, req.user)
   }
 
   @Roles('branch_manager', 'cashier')
@@ -46,9 +63,19 @@ export class SalesController {
     @Headers('x-pos-device-token') deviceToken: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    const terminal = await this.terminals.authenticate(deviceId, deviceToken, req.user);
-    return this.svc.createSale(dto, req.user, terminal.id);
+    const terminal = await this.terminals.authenticate(
+      deviceId,
+      deviceToken,
+      req.user,
+    )
+
+    return this.svc.createSale(
+      dto,
+      req.user,
+      terminal.id,
+    )
   }
+
   @Roles('owner', 'branch_manager', 'cashier')
   @Post('pos/return')
   async ret(
@@ -57,8 +84,15 @@ export class SalesController {
     @Headers('x-pos-device-token') deviceToken: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    if (req.user.role !== 'owner') await this.terminals.authenticate(deviceId, deviceToken, req.user);
-    return this.svc.createReturn(dto, req.user);
+    if (req.user.role !== 'owner') {
+      await this.terminals.authenticate(
+        deviceId,
+        deviceToken,
+        req.user,
+      )
+    }
+
+    return this.svc.createReturn(dto, req.user)
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
@@ -69,9 +103,22 @@ export class SalesController {
     @Headers('x-pos-device-token') deviceToken: string | undefined,
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
-    if (!reference?.trim()) throw new BadRequestException('reference is required');
-    if (req.user.role !== 'owner') await this.terminals.authenticate(deviceId, deviceToken, req.user);
-    return this.svc.findReturnableInvoice(reference.trim(), req.user);
+    if (!reference?.trim()) {
+      throw new BadRequestException('reference is required')
+    }
+
+    if (req.user.role !== 'owner') {
+      await this.terminals.authenticate(
+        deviceId,
+        deviceToken,
+        req.user,
+      )
+    }
+
+    return this.svc.findReturnableInvoice(
+      reference.trim(),
+      req.user,
+    )
   }
 
   @Get('sales/:id/pdf')
@@ -83,19 +130,22 @@ export class SalesController {
     @Req() req: Request & { user: AuthenticatedUser },
     @Res() res: Response,
   ) {
-    const invoice = await this.svc.getInvoice(id, req.user);
-    const buf = await this.pdfService.render(invoice, lang);
-    res.set({ 'Content-Disposition': `inline; filename="bold-${invoice.invoice_number}-${lang}.pdf"` });
-    res.send(buf);
+    const invoice = await this.svc.getInvoice(id, req.user)
+    const buf = await this.pdfService.render(invoice, lang)
+
+    res.set({
+      'Content-Disposition':
+        `inline; filename="bold-${invoice.invoice_number}-${lang}.pdf"`,
+    })
+
+    res.send(buf)
   }
 
-  @Roles('owner', 'branch_manager')
+  @Roles('owner', 'branch_manager', 'cashier')
   @Get('returns')
   listReturns(
     @Query() dto: ListReturnsDto,
-    @Req() req: Request & {
-      user: AuthenticatedUser
-    },
+    @Req() req: Request & { user: AuthenticatedUser },
   ) {
     const branchId = resolveBranchScope(
       req.user,
@@ -103,9 +153,6 @@ export class SalesController {
       ['owner'],
     )
 
-    return this.svc.listReturns(
-      dto,
-      branchId,
-    )
+    return this.svc.listReturns(dto, branchId)
   }
 }
