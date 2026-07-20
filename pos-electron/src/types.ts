@@ -71,12 +71,17 @@ export type InvoiceItem = {
   qty: number
   unit_price: number | string
   unit_tax: number | string
+  returned_qty?: number
   returnable_qty?: number
+  return_items?: ReturnedInvoiceItem[]
   variant?: {
     sku?: string
     size?: string | null
     color?: string | null
-    product?: { name_ar?: string, name_en?: string }
+    product?: {
+      name_ar?: string
+      name_en?: string
+    }
   }
 }
 
@@ -94,6 +99,11 @@ export type Invoice = {
   cashier_id?: string
   terminal?: { id: string, terminal_code: string, name: string } | null
   items?: InvoiceItem[]
+  original_returns?: ReturnRecord[]
+  _count?: {
+    items: number
+    original_returns: number
+  }
 }
 
 export type SyncState = {
@@ -115,4 +125,42 @@ export type SaleDraft = {
   items: CartItem[]
   created_at: string
   updated_at: string
+}
+
+export type ReturnRecord = {
+  id: string
+  return_invoice_number: string
+  original_invoice_id: string
+  branch_id: string
+  reason?: string | null
+  is_partial: boolean
+  refund_subtotal: number | string
+  refund_tax: number | string
+  refund_total: number | string
+  status: 'completed' | 'voided'
+  created_at: string
+  created_by?: string | null
+  _count?: {
+    items: number
+  }
+  original_invoice?: {
+    id: string
+    invoice_number: string
+    total: number | string
+    payment_method: string
+    customer?: {
+      id: string
+      name?: string | null
+      phone: string
+      } | null
+    terminal?: {
+      id: string
+      terminal_code: string
+      name: string
+      } | null
+  }
+}
+
+export type ReturnedInvoiceItem = {
+  qty: number
 }

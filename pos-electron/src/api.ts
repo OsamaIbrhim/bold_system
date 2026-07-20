@@ -34,13 +34,19 @@ function validString(value: unknown): value is string {
 }
 
 export function validDevice(value: any): value is DeviceCredential {
-  return value && validString(value.device_id) && validString(value.device_token) && validString(value.branch_id)
-    && validString(value.terminal_id) && validString(value.terminal_code)
+  return value
+    && validString(value.device_id)
+    && validString(value.device_token)
+    && validString(value.branch_id)
+    && validString(value.terminal_id)
+    && validString(value.terminal_code)
 }
 
 export function validAuth(value: any): value is PersistedAuth {
-  return value?.session && validString(value.session.access_token)
-    && validString(value.session.refresh_token) && validString(value.session.user?.id)
+  return value?.session
+    && validString(value.session.access_token)
+    && validString(value.session.refresh_token)
+    && validString(value.session.user?.id)
     && validString(value.session.user?.branch_id)
 }
 
@@ -179,9 +185,15 @@ export const api = {
     }
     if (!response.ok) throw await parseError(response)
     const value: Session = await response.json()
-    if (!['branch_manager', 'cashier'].includes(value.user.role)) throw new ApiError({ code: 'POS_ROLE_DENIED', message_ar: 'استخدم حساب كاشير أو مدير فرع في نقطة البيع.' })
-    if (!value.user.branch_id) throw new ApiError({ code: 'USER_BRANCH_REQUIRED', message_ar: 'يجب ربط حساب الكاشير بفرع من لوحة الإدارة.' })
-    if (!device || value.user.branch_id !== device.branch_id) throw new ApiError({ code: 'USER_BRANCH_MISMATCH', message_ar: 'حساب الكاشير تابع لفرع مختلف عن هذا الجهاز.' })
+    if (!['branch_manager', 'cashier'].includes(value.user.role)) {
+      throw new ApiError({ code: 'POS_ROLE_DENIED', message_ar: 'استخدم حساب كاشير أو مدير فرع في نقطة البيع.' })
+    }
+    if (!value.user.branch_id) {
+      throw new ApiError({ code: 'USER_BRANCH_REQUIRED', message_ar: 'يجب ربط حساب الكاشير بفرع من لوحة الإدارة.' })
+    }
+    if (!device || value.user.branch_id !== device.branch_id) {
+      throw new ApiError({ code: 'USER_BRANCH_MISMATCH', message_ar: 'حساب الكاشير تابع لفرع مختلف عن هذا الجهاز.' })
+    }
     await saveSession(value)
     return value
   },
@@ -189,7 +201,9 @@ export const api = {
     const refreshToken = session?.refresh_token
     if (refreshToken) {
       await fetch(`${API}/auth/logout`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: refreshToken }),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
       }).catch(() => undefined)
     }
     await clearSession()
