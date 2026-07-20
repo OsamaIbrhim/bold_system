@@ -4,7 +4,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { randomUUID } from 'crypto';
 import { ApiExceptionFilter } from './common/api-error.filter';
-import * as compression from 'compression';
+import compression from 'compression';
 import { apiJsonReplacer } from './common/json-serialization';
 
 async function bootstrap() {
