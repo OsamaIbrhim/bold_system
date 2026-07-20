@@ -73,3 +73,39 @@
   color: #b91c1c;
   font-weight: 700;
 }
+
+.sales-filters.returns {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border-top: 1px solid var(--line);
+  color: #667085;
+  font-size: 13px;
+}
+
+.table-pagination-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.table-pagination-actions button {
+  border: 1px solid #d0d5dd;
+  border-radius: 9px;
+  background: #fff;
+  color: #344054;
+  padding: 7px 12px;
+  font-weight: 800;
+}
+
+.table-pagination-actions strong {
+  min-width: 72px;
+  text-align: center;
+}

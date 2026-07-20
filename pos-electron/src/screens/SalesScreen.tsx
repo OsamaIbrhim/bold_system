@@ -1,4 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, {
+  useEffect,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+} from 'react'
 import { api, ApiError } from '../api'
 import { bold, LocalSale } from '../electron'
 import {
@@ -12,6 +17,23 @@ import {
 } from '../types'
 import { FieldError, Modal } from '../components/ui'
 import { money, paymentLabel } from '../utils'
+import { OPERATIONS_PAGE_SIZE, pageWindow } from '../operations'
+
+type OperationsTab = 'sales' | 'returns'
+
+type ReturnableInvoiceItem = InvoiceItem & {
+  returned_qty: number
+  returnable_qty: number
+}
+
+type ReturnableInvoice = Invoice & {
+  items: ReturnableInvoiceItem[]
+}
+
+type Notify = (
+  message: string,
+  tone?: 'success' | 'error' | 'info',
+) => void
 
 export function SalesScreen({
   session,
@@ -21,91 +43,168 @@ export function SalesScreen({
   onRegister,
   onSync,
   onCloseShift,
-  notify
+  notify,
 }: {
-  session: Session,
-  device: DeviceCredential,
-  shift: Shift,
-  syncState: SyncState,
-  onRegister: () => void,
-  onSync: () => void,
-  onCloseShift: () => void,
-  notify: (message: string, tone?: 'success' | 'error' | 'info') => void
+  session: Session
+  device: DeviceCredential
+  shift: Shift
+  syncState: SyncState
+  onRegister: () => void
+  onSync: () => void
+  onCloseShift: () => void
+  notify: Notify
 }) {
   const [query, setQuery] = useState('')
   const [method, setMethod] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState<OperationsTab>('sales')
+
   const [serverSales, setServerSales] = useState<Invoice[]>([])
+  const [salesPage, setSalesPage] = useState(1)
+  const [salesTotal, setSalesTotal] = useState(0)
+  const [salesTotalPages, setSalesTotalPages] = useState(1)
+  const [salesLoading, setSalesLoading] = useState(true)
+  const [salesError, setSalesError] = useState('')
+
   const [serverReturns, setServerReturns] = useState<ReturnRecord[]>([])
-  const [activeTab, setActiveTab] = useState<'sales' | 'returns'>('sales')
+  const [returnsPage, setReturnsPage] = useState(1)
+  const [returnsTotal, setReturnsTotal] = useState(0)
+  const [returnsTotalPages, setReturnsTotalPages] = useState(1)
+  const [returnsLoading, setReturnsLoading] = useState(true)
+  const [returnsError, setReturnsError] = useState('')
+
   const [localSales, setLocalSales] = useState<LocalSale[]>([])
   const [selected, setSelected] = useState<Invoice | null>(null)
-  const [returnInvoice, setReturnInvoice] = useState<any>(null)
+  const [returnInvoice, setReturnInvoice] =
+    useState<ReturnableInvoice | null>(null)
 
-  const load = async () => {
-    setLoading(true)
-    setError('')
-
+  const loadLocalSales = async () => {
     try {
-      const [salesResult, returnsResult, local] =
-        await Promise.all([
-          api.listSales({
-            branch_id: device.branch_id,
-            q: query,
-            payment_method:
-              method || undefined,
-            page: 1,
-            page_size: 50,
-          }),
-
-          api.listReturns({
-            branch_id: device.branch_id,
-            q: query,
-            page: 1,
-            page_size: 50,
-          }),
-
-          bold.local_sales().catch(() => []),
-        ])
-
-      setServerSales(
-        salesResult.items || [],
-      )
-
-      setServerReturns(
-        returnsResult.items || [],
-      )
-
-      setLocalSales(local)
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'تعذر تحميل العمليات',
-      )
-    } finally {
-      setLoading(false)
+      setLocalSales(await bold.local_sales())
+    } catch {
+      setLocalSales([])
     }
   }
 
-  useEffect(() => { load() }, [])
+  const loadSales = async (page = salesPage) => {
+    setSalesLoading(true)
+    setSalesError('')
+
+    try {
+      const result = await api.listSales({
+        branch_id: device.branch_id,
+        q: query,
+        payment_method: method || undefined,
+        page,
+        page_size: OPERATIONS_PAGE_SIZE,
+      })
+
+      setServerSales(result.items || [])
+      setSalesPage(page)
+      setSalesTotal(Number(result.total || 0))
+      setSalesTotalPages(Math.max(1, Number(result.total_pages || 1)))
+    } catch (error) {
+      setSalesError(
+        error instanceof Error
+          ? error.message
+          : 'تعذر تحميل الفواتير.',
+      )
+    } finally {
+      setSalesLoading(false)
+    }
+  }
+
+  const loadReturns = async (page = returnsPage) => {
+    setReturnsLoading(true)
+    setReturnsError('')
+
+    try {
+      const result = await api.listReturns({
+        branch_id: device.branch_id,
+        q: query,
+        page,
+        page_size: OPERATIONS_PAGE_SIZE,
+      })
+
+      setServerReturns(result.items || [])
+      setReturnsPage(page)
+      setReturnsTotal(Number(result.total || 0))
+      setReturnsTotalPages(Math.max(1, Number(result.total_pages || 1)))
+    } catch (error) {
+      setReturnsError(
+        error instanceof Error
+          ? error.message
+          : 'تعذر تحميل المرتجعات.',
+      )
+    } finally {
+      setReturnsLoading(false)
+    }
+  }
+
+  const refreshAll = async (
+    requestedSalesPage = salesPage,
+    requestedReturnsPage = returnsPage,
+  ) => {
+    await Promise.allSettled([
+      loadSales(requestedSalesPage),
+      loadReturns(requestedReturnsPage),
+      loadLocalSales(),
+    ])
+  }
+
+  useEffect(() => {
+    void refreshAll(1, 1)
+  }, [])
+
+  const runSearch = async () => {
+    setSalesPage(1)
+    setReturnsPage(1)
+
+    await Promise.allSettled([
+      loadSales(1),
+      loadReturns(1),
+      loadLocalSales(),
+    ])
+  }
+
+  const openInvoiceById = async (id: string) => {
+    try {
+      setSelected(await api.getSale(id))
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : 'تعذر فتح الفاتورة.',
+        'error',
+      )
+    }
+  }
 
   const openInvoice = async (invoice: Invoice) => {
-    try {
-      setSelected(await api.getSale(invoice.id))
-    } catch (err) {
-      notify((err as Error).message, 'error')
-    }
+    await openInvoiceById(invoice.id)
   }
 
   const beginReturn = async (invoice: Invoice) => {
     try {
-      setReturnInvoice(await api.invoiceLookup(invoice.invoice_number))
-    } catch (err) {
-      notify((err as Error).message, 'error')
+      const result = await api.invoiceLookup(invoice.invoice_number)
+      setReturnInvoice(result as ReturnableInvoice)
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : 'تعذر تحميل بيانات المرتجع.',
+        'error',
+      )
     }
   }
+
+  const pendingLocalCount = localSales.filter(
+    (sale) => sale.sync_status !== 'sent',
+  ).length
+
+  const activeError =
+    activeTab === 'sales'
+      ? salesError
+      : returnsError
 
   return (
     <div className="app-shell">
@@ -117,10 +216,12 @@ export function SalesScreen({
             <span>{device.terminal_code}</span>
           </div>
         </div>
+
         <nav className="main-nav">
           <button onClick={onRegister}>نقطة البيع</button>
           <button className="active">الفواتير والمرتجعات</button>
         </nav>
+
         <div className="header-status">
           <button
             className={`sync-pill ${syncState.sync_status}`}
@@ -132,10 +233,13 @@ export function SalesScreen({
                 ? 'متصل'
                 : syncState.sync_status === 'syncing'
                   ? 'مزامنة…'
-                  : 'تنبيه'}
+                  : syncState.sync_status === 'offline'
+                    ? 'غير متصل'
+                    : 'تنبيه'}
             </b>
             <small>{syncState.pending_count} معلّق</small>
           </button>
+
           <div className="cashier-chip">
             <b>{session.user.name}</b>
             <span>
@@ -146,114 +250,117 @@ export function SalesScreen({
               })}
             </span>
           </div>
-          <button className="button secondary compact" onClick={onCloseShift}>
+
+          <button
+            className="button secondary compact"
+            onClick={onCloseShift}
+          >
             إغلاق الوردية
           </button>
         </div>
       </header>
+
       <main className="sales-page">
         <section className="page-heading">
           <div>
             <span className="eyebrow">عمليات الفرع</span>
             <h1>الفواتير والمرتجعات</h1>
           </div>
-          <button className="button secondary" onClick={load}>
+
+          <button
+            className="button secondary"
+            onClick={() => void refreshAll()}
+            disabled={salesLoading || returnsLoading}
+          >
             تحديث
           </button>
         </section>
+
         <div className="sales-tabs">
           <button
             type="button"
-            className={
-              activeTab === 'sales'
-                ? 'active'
-                : ''
-            }
-            onClick={() =>
-              setActiveTab('sales')
-            }
+            className={activeTab === 'sales' ? 'active' : ''}
+            onClick={() => setActiveTab('sales')}
           >
             الفواتير
-            <span>{serverSales.length}</span>
+            <span>{salesTotal}</span>
           </button>
 
           <button
             type="button"
-            className={
-              activeTab === 'returns'
-                ? 'active'
-                : ''
-            }
-            onClick={() =>
-              setActiveTab('returns')
-            }
+            className={activeTab === 'returns' ? 'active' : ''}
+            onClick={() => setActiveTab('returns')}
           >
             المرتجعات
-            <span>{serverReturns.length}</span>
+            <span>{returnsTotal}</span>
           </button>
         </div>
-        <div className="sales-filters">
+
+        <div
+          className={`sales-filters ${
+            activeTab === 'returns' ? 'returns' : ''
+          }`}
+        >
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') load()
+            onChange={(event: ChangeEvent<HTMLInputElement>) => setQuery(event.target.value)}
+            onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void runSearch()
+              }
             }}
             placeholder={
               activeTab === 'sales'
-                ? 'رقم الفاتورة أو هاتف العميل'
+                ? 'رقم الفاتورة أو اسم العميل أو هاتفه'
                 : 'رقم المرتجع أو الفاتورة الأصلية أو هاتف العميل'
             }
           />
+
           {activeTab === 'sales' && (
             <select
               value={method}
-              onChange={event =>
-                setMethod(event.target.value)
-              }
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => setMethod(event.target.value)}
             >
-              <option value="">
-                كل طرق الدفع
-              </option>
-
-              <option value="cash">
-                نقدي
-              </option>
-
-              <option value="card">
-                بطاقة
-              </option>
-
-              <option value="instapay">
-                InstaPay
-              </option>
-
-              <option value="vodafone_cash">
-                فودافون كاش
-              </option>
-
-              <option value="installment">
-                تقسيط
-              </option>
+              <option value="">كل طرق الدفع</option>
+              <option value="cash">نقدي</option>
+              <option value="card">بطاقة</option>
+              <option value="instapay">InstaPay</option>
+              <option value="vodafone_cash">فودافون كاش</option>
+              <option value="installment">تقسيط</option>
             </select>
           )}
-          <button className="button primary" onClick={load}>
+
+          <button
+            className="button primary"
+            onClick={() => void runSearch()}
+            disabled={
+              activeTab === 'sales'
+                ? salesLoading
+                : returnsLoading
+            }
+          >
             بحث
           </button>
         </div>
-        <FieldError>{error}</FieldError>
-        {!!localSales.filter((sale) => sale.sync_status !== 'sent').length && (
+
+        <FieldError>{activeError}</FieldError>
+
+        {!!pendingLocalCount && (
           <section className="pending-banner">
             <div>
               <b>عمليات محفوظة محليًا</b>
-              <span>هذه العمليات لم تصل إلى الخادم بعد، فلا تعِد إدخالها.</span>
+              <span>
+                هذه العمليات لم تصل إلى الخادم بعد، فلا تعِد إدخالها.
+              </span>
             </div>
-            <strong>{localSales.filter((sale) => sale.sync_status !== 'sent').length}</strong>
+            <strong>{pendingLocalCount}</strong>
             <button className="button secondary" onClick={onSync}>
               مزامنة الآن
             </button>
           </section>
         )}
+
         {activeTab === 'sales' && (
           <section className="data-card">
             <table className="sales-table">
@@ -268,56 +375,103 @@ export function SalesScreen({
                   <th></th>
                 </tr>
               </thead>
+
               <tbody>
-                {serverSales.map((invoice) => (
-                  <tr key={invoice.id}>
-                    <td>
-                      <b>{invoice.invoice_number}</b>
-                      <small>{invoice.status}</small>
-                      {!!invoice._count?.original_returns && (
-                        <small className="return-badge">
-                          {invoice._count.original_returns}
-                          {' '}
-                          مرتجع
-                        </small>
-                      )}
-                    </td>
-                    <td>{new Date(invoice.created_at).toLocaleString('ar-EG')}</td>
-                    <td>{invoice.customer?.name || invoice.customer?.phone || 'بدون عميل'}</td>
-                    <td>{paymentLabel(invoice.payment_method)}</td>
-                    <td>
-                      <b>{money(invoice.total)} ج</b>
-                    </td>
-                    <td>{invoice.terminal?.terminal_code || '—'}</td>
-                    <td>
-                      <div className="row-actions">
-                        <button onClick={() => openInvoice(invoice)}>تفاصيل</button>
-                        <button onClick={() => beginReturn(invoice)}>مرتجع</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {!loading && !serverSales.length && (
+                {salesLoading && (
                   <tr>
                     <td colSpan={7}>
-                      <div className="empty-state">
-                        <b>لا توجد فواتير مطابقة</b>
-                        <span>جرّب تغيير البحث أو طريقة الدفع.</span>
+                      <div className="table-loading">
+                        جارٍ تحميل الفواتير…
                       </div>
                     </td>
                   </tr>
                 )}
-                {loading && (
+
+                {!salesLoading &&
+                  serverSales.map((invoice) => (
+                    <tr key={invoice.id}>
+                      <td>
+                        <b>{invoice.invoice_number}</b>
+                        <small>{invoice.status}</small>
+
+                        {!!invoice._count?.original_returns && (
+                          <small className="return-badge">
+                            {invoice._count.original_returns} مرتجع
+                          </small>
+                        )}
+                      </td>
+
+                      <td>
+                        {new Date(invoice.created_at).toLocaleString(
+                          'ar-EG',
+                        )}
+                      </td>
+
+                      <td>
+                        {invoice.customer?.name ||
+                          invoice.customer?.phone ||
+                          'بدون عميل'}
+                      </td>
+
+                      <td>{paymentLabel(invoice.payment_method)}</td>
+
+                      <td>
+                        <b>{money(invoice.total)} ج</b>
+                      </td>
+
+                      <td>
+                        {invoice.terminal?.terminal_code || '—'}
+                      </td>
+
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            onClick={() => void openInvoice(invoice)}
+                          >
+                            تفاصيل
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void beginReturn(invoice)}
+                          >
+                            مرتجع
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+
+                {!salesLoading && !serverSales.length && (
                   <tr>
                     <td colSpan={7}>
-                      <div className="table-loading">جارٍ تحميل الفواتير…</div>
+                      <div className="empty-state">
+                        <b>لا توجد فواتير مطابقة</b>
+                        <span>
+                          جرّب تغيير البحث أو طريقة الدفع.
+                        </span>
+                      </div>
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
+
+            {!salesLoading && salesTotal > 0 && (
+              <OperationsPagination
+                page={salesPage}
+                totalPages={salesTotalPages}
+                total={salesTotal}
+                onChange={(page) => {
+                  setSalesPage(page)
+                  void loadSales(page)
+                }}
+              />
+            )}
           </section>
         )}
+
         {activeTab === 'returns' && (
           <section className="data-card">
             <table className="sales-table">
@@ -336,109 +490,7 @@ export function SalesScreen({
               </thead>
 
               <tbody>
-                {serverReturns.map(record => (
-                  <tr key={record.id}>
-                    <td>
-                      <b>
-                        {record.return_invoice_number}
-                      </b>
-
-                      <small>
-                        {record.status === 'completed'
-                          ? 'مكتمل'
-                          : 'ملغي'}
-                      </small>
-                    </td>
-
-                    <td>
-                      <b>
-                        {record.original_invoice
-                          ?.invoice_number || '—'}
-                      </b>
-                    </td>
-
-                    <td>
-                      {new Date(
-                        record.created_at,
-                      ).toLocaleString('ar-EG')}
-                    </td>
-
-                    <td>
-                      {record.original_invoice
-                        ?.customer?.name ||
-                        record.original_invoice
-                          ?.customer?.phone ||
-                        'بدون عميل'}
-                    </td>
-
-                    <td>
-                      {record.is_partial
-                        ? 'مرتجع جزئي'
-                        : 'مرتجع كامل'}
-                    </td>
-
-                    <td>
-                      {record._count?.items || 0}
-                    </td>
-
-                    <td>
-                      <b>
-                        {money(
-                          record.refund_total,
-                        )}{' '}
-                        ج
-                      </b>
-                    </td>
-
-                    <td>
-                      {record.reason || '—'}
-                    </td>
-
-                    <td className='row-actions'>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const invoiceId =
-                            record.original_invoice?.id ||
-                            record.original_invoice_id
-
-                          api
-                            .getSale(invoiceId)
-                            .then(setSelected)
-                            .catch(error =>
-                              notify(
-                                error instanceof Error
-                                  ? error.message
-                                  : 'تعذر فتح الفاتورة',
-                                'error',
-                              ),
-                            )
-                        }}
-                      >
-                        عرض الفاتورة
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-
-                {!loading &&
-                  !serverReturns.length && (
-                    <tr>
-                      <td colSpan={9}>
-                        <div className="empty-state">
-                          <b>
-                            لا توجد مرتجعات مطابقة
-                          </b>
-
-                          <span>
-                            جرّب تغيير عبارة البحث.
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-
-                {loading && (
+                {returnsLoading && (
                   <tr>
                     <td colSpan={9}>
                       <div className="table-loading">
@@ -447,30 +499,173 @@ export function SalesScreen({
                     </td>
                   </tr>
                 )}
+
+                {!returnsLoading &&
+                  serverReturns.map((record) => (
+                    <tr key={record.id}>
+                      <td>
+                        <b>{record.return_invoice_number}</b>
+                        <small>
+                          {record.status === 'completed'
+                            ? 'مكتمل'
+                            : 'ملغي'}
+                        </small>
+                      </td>
+
+                      <td>
+                        <b>
+                          {record.original_invoice?.invoice_number ||
+                            '—'}
+                        </b>
+                      </td>
+
+                      <td>
+                        {new Date(record.created_at).toLocaleString(
+                          'ar-EG',
+                        )}
+                      </td>
+
+                      <td>
+                        {record.original_invoice?.customer?.name ||
+                          record.original_invoice?.customer?.phone ||
+                          'بدون عميل'}
+                      </td>
+
+                      <td>
+                        {record.is_partial
+                          ? 'مرتجع جزئي'
+                          : 'مرتجع كامل'}
+                      </td>
+
+                      <td>{record._count?.items || 0}</td>
+
+                      <td>
+                        <b>{money(record.refund_total)} ج</b>
+                      </td>
+
+                      <td>{record.reason || '—'}</td>
+
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void openInvoiceById(
+                                record.original_invoice?.id ||
+                                  record.original_invoice_id,
+                              )
+                            }
+                          >
+                            عرض الفاتورة
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+
+                {!returnsLoading && !serverReturns.length && (
+                  <tr>
+                    <td colSpan={9}>
+                      <div className="empty-state">
+                        <b>لا توجد مرتجعات مطابقة</b>
+                        <span>جرّب تغيير عبارة البحث.</span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
+
+            {!returnsLoading && returnsTotal > 0 && (
+              <OperationsPagination
+                page={returnsPage}
+                totalPages={returnsTotalPages}
+                total={returnsTotal}
+                onChange={(page) => {
+                  setReturnsPage(page)
+                  void loadReturns(page)
+                }}
+              />
+            )}
           </section>
         )}
       </main>
+
       <InvoiceModal
         invoice={selected}
         onClose={() => setSelected(null)}
         onReturn={(invoice) => {
           setSelected(null)
-          beginReturn(invoice)
+          void beginReturn(invoice)
         }}
         notify={notify}
       />
+
       <ReturnModal
         invoice={returnInvoice}
         onClose={() => setReturnInvoice(null)}
         onCompleted={async () => {
           setReturnInvoice(null)
-          await load()
+          setReturnsPage(1)
+          setActiveTab('returns')
+
+          await Promise.allSettled([
+            loadSales(salesPage),
+            loadReturns(1),
+            loadLocalSales(),
+          ])
         }}
         notify={notify}
       />
     </div>
+  )
+}
+
+function OperationsPagination({
+  page,
+  totalPages,
+  total,
+  onChange,
+}: {
+  page: number
+  totalPages: number
+  total: number
+  onChange: (page: number) => void
+}) {
+  const range = pageWindow(
+    page,
+    total,
+    OPERATIONS_PAGE_SIZE,
+  )
+
+  return (
+    <footer className="table-pagination">
+      <span>
+        عرض {range.from}–{range.to} من {total}
+      </span>
+
+      <div className="table-pagination-actions">
+        <button
+          type="button"
+          disabled={page <= 1}
+          onClick={() => onChange(page - 1)}
+        >
+          السابق
+        </button>
+
+        <strong>
+          {page} / {totalPages}
+        </strong>
+
+        <button
+          type="button"
+          disabled={page >= totalPages}
+          onClick={() => onChange(page + 1)}
+        >
+          التالي
+        </button>
+      </div>
+    </footer>
   )
 }
 
@@ -483,33 +678,46 @@ function itemName(item: InvoiceItem) {
   )
 }
 
+function returnedQty(item: InvoiceItem) {
+  return (item.return_items || []).reduce(
+    (sum, record) => sum + Number(record.qty || 0),
+    0,
+  )
+}
+
 function InvoiceModal({
   invoice,
   onClose,
   onReturn,
-  notify
+  notify,
 }: {
-  invoice: Invoice | null,
-  onClose: () => void,
-  onReturn: (invoice: Invoice) => void,
-  notify: (message: string, tone?: 'success' | 'error' | 'info') => void
+  invoice: Invoice | null
+  onClose: () => void
+  onReturn: (invoice: Invoice) => void
+  notify: Notify
 }) {
   const reprint = async () => {
     if (!invoice) return
+
     const items = (invoice.items || []).map((item) => ({
       name: itemName(item),
       sku: item.variant?.sku,
       qty: item.qty,
-      unit_price: Number(item.unit_price),
+      unit_price:
+        Number(item.unit_price) +
+        Number(item.unit_tax || 0),
     }))
+
     const result = await bold.print(
       {
         invoice_number: invoice.invoice_number,
+        payment_method: invoice.payment_method,
         total: Number(invoice.total),
         items,
       },
       'ar',
     )
+
     notify(
       result.ok
         ? 'تم إرسال الإيصال للطابعة'
@@ -518,18 +726,18 @@ function InvoiceModal({
     )
   }
 
-  function returnedQty(item: InvoiceItem) {
-    return (item.return_items || []).reduce(
-      (sum, record) =>
-        sum + Number(record.qty || 0),
-      0,
-    )
-  }
+  const hasReturnableItems = !!invoice?.items?.some(
+    (item) => item.qty - returnedQty(item) > 0,
+  )
 
   return (
     <Modal
       open={!!invoice}
-      title={invoice ? `فاتورة ${invoice.invoice_number}` : 'الفاتورة'}
+      title={
+        invoice
+          ? `فاتورة ${invoice.invoice_number}`
+          : 'الفاتورة'
+      }
       onClose={onClose}
       width="820px"
     >
@@ -538,21 +746,33 @@ function InvoiceModal({
           <div className="invoice-summary">
             <div>
               <span>التاريخ</span>
-              <b>{new Date(invoice.created_at).toLocaleString('ar-EG')}</b>
+              <b>
+                {new Date(invoice.created_at).toLocaleString(
+                  'ar-EG',
+                )}
+              </b>
             </div>
+
             <div>
               <span>طريقة الدفع</span>
               <b>{paymentLabel(invoice.payment_method)}</b>
             </div>
+
             <div>
               <span>العميل</span>
-              <b>{invoice.customer?.name || invoice.customer?.phone || 'بدون عميل'}</b>
+              <b>
+                {invoice.customer?.name ||
+                  invoice.customer?.phone ||
+                  'بدون عميل'}
+              </b>
             </div>
+
             <div>
               <span>الإجمالي</span>
               <b>{money(invoice.total)} ج</b>
             </div>
           </div>
+
           <table className="line-table">
             <thead>
               <tr>
@@ -560,18 +780,21 @@ function InvoiceModal({
                 <th>الكمية الأصلية</th>
                 <th>تم إرجاعه</th>
                 <th>المتبقي</th>
-                <th>السعر</th>
-                <th>الإجمالي الأصلي</th>
+                <th>سعر الوحدة شامل الضريبة</th>
+                <th>إجمالي السطر</th>
               </tr>
             </thead>
 
             <tbody>
-              {(invoice.items || []).map(item => {
+              {(invoice.items || []).map((item) => {
                 const returned = returnedQty(item)
                 const remaining = Math.max(
                   0,
                   item.qty - returned,
                 )
+                const grossUnit =
+                  Number(item.unit_price) +
+                  Number(item.unit_tax || 0)
 
                 return (
                   <tr key={item.id}>
@@ -581,25 +804,19 @@ function InvoiceModal({
                     <td>
                       <b>{remaining}</b>
                     </td>
-                    <td>{money(item.unit_price)}</td>
-                    <td>
-                      {money(
-                        Number(item.unit_price) *
-                        item.qty,
-                      )}
-                    </td>
+                    <td>{money(grossUnit)}</td>
+                    <td>{money(grossUnit * item.qty)}</td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
+
           <section className="invoice-returns">
             <div className="section-heading">
               <h3>سجل المرتجعات</h3>
-
               <span>
-                {invoice.original_returns?.length || 0}
-                {' '}عملية
+                {invoice.original_returns?.length || 0} عملية
               </span>
             </div>
 
@@ -620,12 +837,10 @@ function InvoiceModal({
                 </thead>
 
                 <tbody>
-                  {invoice.original_returns.map(record => (
+                  {invoice.original_returns.map((record) => (
                     <tr key={record.id}>
                       <td>
-                        <b>
-                          {record.return_invoice_number}
-                        </b>
+                        <b>{record.return_invoice_number}</b>
                       </td>
 
                       <td>
@@ -640,14 +855,10 @@ function InvoiceModal({
                           : 'مرتجع كامل'}
                       </td>
 
-                      <td>
-                        {record.reason || '—'}
-                      </td>
+                      <td>{record.reason || '—'}</td>
 
                       <td>
-                        <b>
-                          {money(record.refund_total)} ج
-                        </b>
+                        <b>{money(record.refund_total)} ج</b>
                       </td>
                     </tr>
                   ))}
@@ -655,12 +866,23 @@ function InvoiceModal({
               </table>
             )}
           </section>
+
           <div className="dialog-actions">
-            <button className="button secondary" onClick={reprint}>
+            <button
+              className="button secondary"
+              onClick={() => void reprint()}
+            >
               إعادة الطباعة
             </button>
-            <button className="button danger" onClick={() => onReturn(invoice)}>
-              إنشاء مرتجع
+
+            <button
+              className="button danger"
+              disabled={!hasReturnableItems}
+              onClick={() => onReturn(invoice)}
+            >
+              {hasReturnableItems
+                ? 'إنشاء مرتجع'
+                : 'تم إرجاع كامل الفاتورة'}
             </button>
           </div>
         </div>
@@ -673,14 +895,15 @@ function ReturnModal({
   invoice,
   onClose,
   onCompleted,
-  notify
+  notify,
 }: {
-  invoice: any,
-  onClose: () => void,
-  onCompleted: () => void | Promise<void>,
-  notify: (message: string, tone?: 'success' | 'error' | 'info') => void
+  invoice: ReturnableInvoice | null
+  onClose: () => void
+  onCompleted: () => void | Promise<void>
+  notify: Notify
 }) {
-  const [quantities, setQuantities] = useState<Record<string, number>>({})
+  const [quantities, setQuantities] =
+    useState<Record<string, number>>({})
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -694,25 +917,40 @@ function ReturnModal({
     }
   }, [invoice])
 
-  const items: any[] = invoice?.items || []
-  const selected = items.filter((item) => Number(quantities[item.id] || 0) > 0)
-  const refund = useMemo(
-    () =>
-      selected.reduce(
-        (sum, item) =>
-          sum +
-          (Number(item.unit_price) + Number(item.unit_tax || 0)) *
-          Number(quantities[item.id]),
-        0,
-      ),
-    [selected, quantities],
+  const items = invoice?.items || []
+
+  const selectedItems = items.filter(
+    (item) => Number(quantities[item.id] || 0) > 0,
+  )
+
+  const refund = selectedItems.reduce(
+    (sum, item) =>
+      sum +
+      (Number(item.unit_price) +
+        Number(item.unit_tax || 0)) *
+        Number(quantities[item.id]),
+    0,
   )
 
   const submit = async () => {
-    if (busy) return
+    if (busy || !invoice) return
 
-    if (!selected.length) {
+    if (!selectedItems.length) {
       setError('اختر صنفًا واحدًا على الأقل.')
+      return
+    }
+
+    const invalidItem = selectedItems.find((item) => {
+      const qty = Number(quantities[item.id])
+      return (
+        !Number.isInteger(qty) ||
+        qty < 1 ||
+        qty > Number(item.returnable_qty || 0)
+      )
+    })
+
+    if (invalidItem) {
+      setError('إحدى كميات المرتجع غير صحيحة.')
       return
     }
 
@@ -722,7 +960,7 @@ function ReturnModal({
     try {
       const result = await api.returnSale({
         original_invoice_id: invoice.id,
-        items: selected.map((item) => ({
+        items: selectedItems.map((item) => ({
           sales_invoice_item_id: item.id,
           qty: Number(quantities[item.id]),
         })),
@@ -739,9 +977,10 @@ function ReturnModal({
       const value = error as ApiError
 
       setError(
-        `${value.message}${value.requestId
-          ? ` — المرجع: ${value.requestId}`
-          : ''
+        `${value.message}${
+          value.requestId
+            ? ` — المرجع: ${value.requestId}`
+            : ''
         }`,
       )
     } finally {
@@ -749,11 +988,23 @@ function ReturnModal({
     }
   }
 
+  const allReturned =
+    items.length > 0 &&
+    items.every(
+      (item) => Number(item.returnable_qty || 0) === 0,
+    )
+
   return (
     <Modal
       open={!!invoice}
-      title={invoice ? `مرتجع ${invoice.invoice_number}` : 'مرتجع'}
-      onClose={() => { if (!busy) onClose() }}
+      title={
+        invoice
+          ? `مرتجع ${invoice.invoice_number}`
+          : 'مرتجع'
+      }
+      onClose={() => {
+        if (!busy) onClose()
+      }}
       width="900px"
     >
       {invoice && (
@@ -763,6 +1014,14 @@ function ReturnModal({
             في عمليات سابقة، والكمية المتبقية التي لا يزال
             مسموحًا بإرجاعها.
           </p>
+
+          {allReturned && (
+            <div className="return-complete-notice">
+              تم إرجاع كامل أصناف هذه الفاتورة، ولا توجد كمية
+              متاحة لمرتجع جديد.
+            </div>
+          )}
+
           <table className="line-table">
             <thead>
               <tr>
@@ -774,129 +1033,155 @@ function ReturnModal({
                 <th>قيمة الاسترداد</th>
               </tr>
             </thead>
+
             <tbody>
-              {items.map((item) => (
-                <tr key={item.id}>
-                  <td>{itemName(item)}</td>
-                  <td>{item.qty}</td>
+              {items.map((item) => {
+                const maximum = Number(
+                  item.returnable_qty || 0,
+                )
 
-                  <td>
-                    {Number(item.returned_qty || 0)}
-                  </td>
+                return (
+                  <tr key={item.id}>
+                    <td>{itemName(item)}</td>
+                    <td>{item.qty}</td>
+                    <td>
+                      {Number(item.returned_qty || 0)}
+                    </td>
+                    <td>
+                      {maximum > 0 ? (
+                        <b>{maximum}</b>
+                      ) : (
+                        <small className="return-complete-label">
+                          تم إرجاع كامل الكمية
+                        </small>
+                      )}
+                    </td>
 
-                  <td>
-                    {item.returnable_qty ? (
-                      <b>{Number(item.returnable_qty)}</b>
-                    ) : (
-                      <small className="return-complete-label">
-                        تم إرجاع كامل الكمية
-                      </small>
-                    )}
-                  </td>
+                    <td>
+                      <div className="qty-control">
+                        <button
+                          type="button"
+                          disabled={busy || maximum === 0}
+                          onClick={() =>
+                            setQuantities((current) => ({
+                              ...current,
+                              [item.id]: Math.max(
+                                0,
+                                Number(
+                                  current[item.id] || 0,
+                                ) - 1,
+                              ),
+                            }))
+                          }
+                        >
+                          −
+                        </button>
 
-                  <td>
-                    <div className="qty-control">
-                      <button
-                        type="button"
-                        disabled={
-                          busy ||
-                          Number(item.returnable_qty || 0) === 0
-                        }
-                        onClick={() =>
-                          setQuantities(current => ({
-                            ...current,
-                            [item.id]: Math.max(
-                              0,
-                              Number(current[item.id] || 0) - 1,
-                            ),
-                          }))
-                        }
-                      >
-                        −
-                      </button>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          max={maximum}
+                          disabled={busy || maximum === 0}
+                          value={quantities[item.id] || 0}
+                          onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                            const raw = Number(
+                              event.target.value || 0,
+                            )
+                            const next = Math.min(
+                              maximum,
+                              Math.max(
+                                0,
+                                Math.floor(
+                                  Number.isFinite(raw)
+                                    ? raw
+                                    : 0,
+                                ),
+                              ),
+                            )
 
-                      <input
-                        type="number"
-                        min="0"
-                        max={Number(item.returnable_qty || 0)}
-                        disabled={
-                          busy ||
-                          Number(item.returnable_qty || 0) === 0
-                        }
-                        value={quantities[item.id] || 0}
-                        onChange={event => {
-                          const maximum = Number(
-                            item.returnable_qty || 0,
-                          )
+                            setQuantities((current) => ({
+                              ...current,
+                              [item.id]: next,
+                            }))
+                          }}
+                        />
 
-                          const next = Math.min(
-                            maximum,
-                            Math.max(
-                              0,
-                              Number(event.target.value || 0),
-                            ),
-                          )
+                        <button
+                          type="button"
+                          disabled={busy || maximum === 0}
+                          onClick={() =>
+                            setQuantities((current) => ({
+                              ...current,
+                              [item.id]: Math.min(
+                                maximum,
+                                Number(
+                                  current[item.id] || 0,
+                                ) + 1,
+                              ),
+                            }))
+                          }
+                        >
+                          +
+                        </button>
+                      </div>
+                    </td>
 
-                          setQuantities(current => ({
-                            ...current,
-                            [item.id]: next,
-                          }))
-                        }}
-                      />
-
-                      <button
-                        type="button"
-                        disabled={
-                          busy ||
-                          Number(item.returnable_qty || 0) === 0
-                        }
-                        onClick={() =>
-                          setQuantities(current => ({
-                            ...current,
-                            [item.id]: Math.min(
-                              Number(item.returnable_qty || 0),
-                              Number(current[item.id] || 0) + 1,
-                            ),
-                          }))
-                        }
-                      >
-                        +
-                      </button>
-                    </div>
-                  </td>
-                  <td>
-                    {money(
-                      (Number(item.unit_price) + Number(item.unit_tax || 0)) *
-                      Number(quantities[item.id] || 0),
-                    )}{' '}
-                    ج
-                  </td>
-                </tr>
-              ))}
+                    <td>
+                      {money(
+                        (Number(item.unit_price) +
+                          Number(item.unit_tax || 0)) *
+                          Number(
+                            quantities[item.id] || 0,
+                          ),
+                      )}{' '}
+                      ج
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
+
           <label>سبب الإرجاع (اختياري)</label>
           <textarea
             value={reason}
-            onChange={(event) => setReason(event.target.value)}
+            onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
+              setReason(event.target.value)
+            }
             rows={3}
+            maxLength={500}
             placeholder="مثال: المقاس غير مناسب"
           />
+
           <div className="refund-total">
             <span>إجمالي الاسترداد</span>
             <b>{money(refund)} ج</b>
           </div>
+
           <FieldError>{error}</FieldError>
+
           <div className="dialog-actions">
-            <button className="button secondary" disabled={busy} onClick={onClose}>
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={onClose}
+            >
               إلغاء
             </button>
+
             <button
               className="button danger xl"
-              disabled={busy || !selected.length}
-              onClick={submit}
+              disabled={
+                busy ||
+                !selectedItems.length ||
+                allReturned
+              }
+              onClick={() => void submit()}
             >
-              {busy ? 'جارٍ تسجيل المرتجع…' : 'تأكيد المرتجع'}
+              {busy
+                ? 'جارٍ تسجيل المرتجع…'
+                : 'تأكيد المرتجع'}
             </button>
           </div>
         </div>
