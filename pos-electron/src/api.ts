@@ -34,13 +34,19 @@ function validString(value: unknown): value is string {
 }
 
 export function validDevice(value: any): value is DeviceCredential {
-  return value && validString(value.device_id) && validString(value.device_token) && validString(value.branch_id)
-    && validString(value.terminal_id) && validString(value.terminal_code)
+  return value
+    && validString(value.device_id)
+    && validString(value.device_token)
+    && validString(value.branch_id)
+    && validString(value.terminal_id)
+    && validString(value.terminal_code)
 }
 
 export function validAuth(value: any): value is PersistedAuth {
-  return value?.session && validString(value.session.access_token)
-    && validString(value.session.refresh_token) && validString(value.session.user?.id)
+  return value?.session
+    && validString(value.session.access_token)
+    && validString(value.session.refresh_token)
+    && validString(value.session.user?.id)
     && validString(value.session.user?.branch_id)
 }
 
@@ -85,7 +91,7 @@ async function refreshSession() {
   return refreshPromise
 }
 
-async function request<T=any>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+async function request<T = any>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${API}${path}`, {
@@ -137,7 +143,7 @@ export const api = {
     } else if (secure.auth) await bold.secure_set_auth(null)
     return { device, session, user: session?.user || null, offline: !!session && !navigator.onLine }
   },
-  enroll: async (enrollmentCode: string, terminal: { device_id:string, terminal_name:string, app_version:string }) => {
+  enroll: async (enrollmentCode: string, terminal: { device_id: string, terminal_name: string, app_version: string }) => {
     let response: Response
     try {
       response = await fetch(`${API}/terminals/enroll`, {
@@ -179,9 +185,15 @@ export const api = {
     }
     if (!response.ok) throw await parseError(response)
     const value: Session = await response.json()
-    if (!['branch_manager', 'cashier'].includes(value.user.role)) throw new ApiError({ code: 'POS_ROLE_DENIED', message_ar: 'استخدم حساب كاشير أو مدير فرع في نقطة البيع.' })
-    if (!value.user.branch_id) throw new ApiError({ code: 'USER_BRANCH_REQUIRED', message_ar: 'يجب ربط حساب الكاشير بفرع من لوحة الإدارة.' })
-    if (!device || value.user.branch_id !== device.branch_id) throw new ApiError({ code: 'USER_BRANCH_MISMATCH', message_ar: 'حساب الكاشير تابع لفرع مختلف عن هذا الجهاز.' })
+    if (!['branch_manager', 'cashier'].includes(value.user.role)) {
+      throw new ApiError({ code: 'POS_ROLE_DENIED', message_ar: 'استخدم حساب كاشير أو مدير فرع في نقطة البيع.' })
+    }
+    if (!value.user.branch_id) {
+      throw new ApiError({ code: 'USER_BRANCH_REQUIRED', message_ar: 'يجب ربط حساب الكاشير بفرع من لوحة الإدارة.' })
+    }
+    if (!device || value.user.branch_id !== device.branch_id) {
+      throw new ApiError({ code: 'USER_BRANCH_MISMATCH', message_ar: 'حساب الكاشير تابع لفرع مختلف عن هذا الجهاز.' })
+    }
     await saveSession(value)
     return value
   },
@@ -189,29 +201,48 @@ export const api = {
     const refreshToken = session?.refresh_token
     if (refreshToken) {
       await fetch(`${API}/auth/logout`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: refreshToken }),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
       }).catch(() => undefined)
     }
     await clearSession()
   },
-  search: (q: string, branchId?: string) => request<any[]>(`/products/search?q=${encodeURIComponent(q)}${branchId ? `&branch_id=${branchId}` : ''}`),
-  sale: (payload: any) => request<any>('/pos/sale', { method: 'POST', body: JSON.stringify(payload) }),
-  pricing: (variantId: string) => request<any>('/pricing/calculate', { method: 'POST', body: JSON.stringify({ variant_id: variantId }) }),
-  customerLookup: (phone: string) => request<any>(`/customers/lookup?phone=${encodeURIComponent(phone)}`),
-  customerLoyalty: (phone: string) => request<any>(`/customers/loyalty?phone=${encodeURIComponent(phone)}`),
-  customers: (q: string) => request<any[]>(`/customers?q=${encodeURIComponent(q)}`),
-  createCustomer: (payload: any) => request<any>('/customers', { method: 'POST', body: JSON.stringify(payload) }),
-  listSales: (params: Record<string,string|number|undefined>) => {
+  search: (q: string, branchId?: string) =>
+    request<any[]>(`/products/search?q=${encodeURIComponent(q)}${branchId ? `&branch_id=${branchId}` : ''}`),
+  sale: (payload: any) =>
+    request<any>('/pos/sale', { method: 'POST', body: JSON.stringify(payload) }),
+  pricing: (variantId: string) =>
+    request<any>('/pricing/calculate', { method: 'POST', body: JSON.stringify({ variant_id: variantId }) }),
+  customerLookup: (phone: string) =>
+    request<any>(`/customers/lookup?phone=${encodeURIComponent(phone)}`),
+  customerLoyalty: (phone: string) =>
+    request<any>(`/customers/loyalty?phone=${encodeURIComponent(phone)}`),
+  customers: (q: string) =>
+    request<any[]>(`/customers?q=${encodeURIComponent(q)}`),
+  createCustomer: (payload: any) =>
+    request<any>('/customers', { method: 'POST', body: JSON.stringify(payload) }),
+  listSales: (params: Record<string, string | number | undefined>) => {
     const query = new URLSearchParams()
-    Object.entries(params).forEach(([key,value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
-    return request<{items:Invoice[],total:number,total_pages:number}>(`/sales?${query.toString()}`)
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.set(key, String(value))
+    })
+    return request<{ items: Invoice[], total: number, total_pages: number }>(`/sales?${query.toString()}`)
   },
-  getSale: (id: string) => request<Invoice>(`/sales/${encodeURIComponent(id)}`),
-  invoiceLookup: (reference: string) => request<any>(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
-  returnSale: (payload: any) => request<any>('/pos/return', { method: 'POST', body: JSON.stringify(payload) }),
-  currentShift: (branchId: string) => request<Shift | null>(`/shifts/current?branch_id=${encodeURIComponent(branchId)}`),
-  openShift: (branchId: string, openingCash: number) => request<Shift>('/shifts/open', { method: 'POST', body: JSON.stringify({ branch_id: branchId, opening_cash: openingCash }) }),
-  closeShift: (id: string, closingCash: number) => request<Shift>(`/shifts/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({ closing_cash: closingCash }) }),
-  pull: (branchId: string, cursor?: string | null) => request<any>(`/sync/pull?branch_id=${encodeURIComponent(branchId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
-  heartbeat: (payload: any) => request<any>('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
+  getSale: (id: string) =>
+    request<Invoice>(`/sales/${encodeURIComponent(id)}`),
+  invoiceLookup: (reference: string) =>
+    request<any>(`/pos/invoices/lookup?reference=${encodeURIComponent(reference)}`),
+  returnSale: (payload: any) =>
+    request<any>('/pos/return', { method: 'POST', body: JSON.stringify(payload) }),
+  currentShift: (branchId: string) =>
+    request<Shift | null>(`/shifts/current?branch_id=${encodeURIComponent(branchId)}`),
+  openShift: (branchId: string, openingCash: number) =>
+    request<Shift>('/shifts/open', { method: 'POST', body: JSON.stringify({ branch_id: branchId, opening_cash: openingCash }) }),
+  closeShift: (id: string, closingCash: number) =>
+    request<Shift>(`/shifts/${encodeURIComponent(id)}/close`, { method: 'POST', body: JSON.stringify({ closing_cash: closingCash }) }),
+  pull: (branchId: string, cursor?: string | null) =>
+    request<any>(`/sync/pull?branch_id=${encodeURIComponent(branchId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
+  heartbeat: (payload: any) =>
+    request<any>('/terminals/heartbeat', { method: 'POST', body: JSON.stringify(payload) }),
 }

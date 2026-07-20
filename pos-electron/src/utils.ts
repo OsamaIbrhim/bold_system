@@ -1,12 +1,22 @@
 import { CartItem, SaleDraft } from './types'
 
-export const toCents = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100)
+export const toCents = (value: number) =>
+  Math.round((Number.isFinite(value) ? value : 0) * 100)
+
 export const fromCents = (value: number) => value / 100
-export const money = (value: number | string | null | undefined) => Number(value || 0).toFixed(2)
+
+export const money = (value: number | string | null | undefined) =>
+  Number(value || 0).toFixed(2)
 
 export function cartTotals(items: CartItem[]) {
-  const subtotalCents = items.reduce((sum, item) => sum + toCents(item.unit_price) * item.qty, 0)
-  const taxCents = items.reduce((sum, item) => sum + toCents(item.unit_tax) * item.qty, 0)
+  const subtotalCents = items.reduce(
+    (sum, item) => sum + toCents(item.unit_price) * item.qty,
+    0,
+  )
+  const taxCents = items.reduce(
+    (sum, item) => sum + toCents(item.unit_tax) * item.qty,
+    0,
+  )
   return {
     subtotal: fromCents(subtotalCents),
     tax: fromCents(taxCents),
@@ -38,9 +48,16 @@ export function writeHeldSales(value: SaleDraft[]) {
   localStorage.setItem(HELD_SALES_KEY, JSON.stringify(value.slice(0, 50)))
 }
 
-export function saveHeldSale(draft: Omit<SaleDraft, 'id' | 'created_at' | 'updated_at'>) {
+export function saveHeldSale(
+  draft: Omit<SaleDraft, 'id' | 'created_at' | 'updated_at'>,
+) {
   const now = new Date().toISOString()
-  const value: SaleDraft = { ...draft, id: crypto.randomUUID(), created_at: now, updated_at: now }
+  const value: SaleDraft = {
+    ...draft,
+    id: crypto.randomUUID(),
+    created_at: now,
+    updated_at: now,
+  }
   writeHeldSales([value, ...readHeldSales()])
   return value
 }
@@ -50,11 +67,13 @@ export function removeHeldSale(id: string) {
 }
 
 export function paymentLabel(method: string) {
-  return ({
-    cash: 'نقدي',
-    card: 'بطاقة',
-    instapay: 'InstaPay',
-    vodafone_cash: 'فودافون كاش',
-    installment: 'تقسيط',
-  } as Record<string, string>)[method] || method
+  return (
+    {
+      cash: 'نقدي',
+      card: 'بطاقة',
+      instapay: 'InstaPay',
+      vodafone_cash: 'فودافون كاش',
+      installment: 'تقسيط',
+    } as Record<string, string>
+  )[method] || method
 }
