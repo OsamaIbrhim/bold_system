@@ -12,7 +12,7 @@ let win: BrowserWindow
 
 function dbPath() { return path.join(app.getPath('userData'), 'bold_pos.sqlite') }
 function secureStatePath() { return path.join(app.getPath('userData'), 'secure-state.bin') }
-function saveDb() { try { const data = db.export(); fs.writeFileSync(dbPath(), Buffer.from(data)) } catch {} }
+function saveDb() { try { const data = db.export(); fs.writeFileSync(dbPath(), Buffer.from(data)) } catch { } }
 
 type SecureState = {
   auth?: any
@@ -58,8 +58,8 @@ async function initDb() {
   `)
   // Forward-compatible local schema migration for databases created before
   // tax snapshots were synced with the price book.
-  try { db.exec(`ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`) } catch {}
-  try { db.exec(`ALTER TABLE products ADD COLUMN name_ar TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`) } catch { }
+  try { db.exec(`ALTER TABLE products ADD COLUMN name_ar TEXT`) } catch { }
   if (!getMeta('device_id')) setMeta('device_id', randomUUID())
   if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
   if (!getMeta('sync_status')) setMeta('sync_status', 'never')
@@ -90,18 +90,18 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
       run(`UPDATE stock SET qty = qty - ? WHERE variant_id = ? AND qty >= ?`, [it.qty, it.variant_id, it.qty])
       if (db.getRowsModified() !== 1) throw new Error(`Insufficient local stock for ${it.variant_id}`)
     }
-    run(`INSERT INTO sales_local (sync_id, invoice_number, total, created_at) VALUES (?,?,?,?)`, [sync_id, sale.invoice_number || 'LOCAL-'+Date.now(), local_total||0, new Date().toISOString()])
-    run(`INSERT INTO outbox (id, type, payload, sync_status, created_at) VALUES (?,?,?,?,?)`, [sync_id, 'sale', JSON.stringify({...command, sync_id}), 'pending', new Date().toISOString()])
+    run(`INSERT INTO sales_local (sync_id, invoice_number, total, created_at) VALUES (?,?,?,?)`, [sync_id, sale.invoice_number || 'LOCAL-' + Date.now(), local_total || 0, new Date().toISOString()])
+    run(`INSERT INTO outbox (id, type, payload, sync_status, created_at) VALUES (?,?,?,?,?)`, [sync_id, 'sale', JSON.stringify({ ...command, sync_id }), 'pending', new Date().toISOString()])
     db.exec('COMMIT')
     saveDb()
     return { sync_id, ok: true }
   } catch (error) {
-    try { db.exec('ROLLBACK') } catch {}
+    try { db.exec('ROLLBACK') } catch { }
     throw error
   }
 })
 ipcMain.handle('sync:get_outbox', () => q(`SELECT * FROM outbox WHERE sync_status='pending'`))
-ipcMain.handle('sync:mark_sent', (_e, ids: string[]) => { for (const id of ids) run(`UPDATE outbox SET sync_status='sent' WHERE id = ?`, [id]); saveDb(); return { ok: true }})
+ipcMain.handle('sync:mark_sent', (_e, ids: string[]) => { for (const id of ids) run(`UPDATE outbox SET sync_status='sent' WHERE id = ?`, [id]); saveDb(); return { ok: true } })
 ipcMain.handle('sync:get_status', () => ({
   device_id: getMeta('device_id'),
   terminal_name: getMeta('terminal_name'),
@@ -143,14 +143,14 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
       run(`DELETE FROM products WHERE id = ?`, [id])
       run(`DELETE FROM stock WHERE variant_id = ?`, [id])
     }
-    for (const p of data.products||[]) run(`INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [p.id, p.sku, p.name_en||'', p.name_ar||'', p.barcode_ean13||null, p.barcode_internal||null, p.size||null, p.color||null, 0, Number(p.selling_price||0), Number(p.unit_tax||0)])
-    for (const s of data.stock||[]) run(`INSERT OR REPLACE INTO stock (variant_id, qty) VALUES (?,?)`, [s.variant_id, s.qty_on_hand||0])
+    for (const p of data.products || []) run(`INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [p.id, p.sku, p.name_en || '', p.name_ar || '', p.barcode_ean13 || null, p.barcode_internal || null, p.size || null, p.color || null, 0, Number(p.selling_price || 0), Number(p.unit_tax || 0)])
+    for (const s of data.stock || []) run(`INSERT OR REPLACE INTO stock (variant_id, qty) VALUES (?,?)`, [s.variant_id, s.qty_on_hand || 0])
     if (data.cursor !== undefined) setMeta('sync_cursor', String(data.cursor))
     db.exec('COMMIT')
     saveDb()
     return { ok: true }
   } catch (error) {
-    try { db.exec('ROLLBACK') } catch {}
+    try { db.exec('ROLLBACK') } catch { }
     throw error
   }
 })
@@ -158,15 +158,15 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
 // ESC/POS Thermal Receipt – 80mm – HTML print, no native modules
 // Cash drawer kick: most thermal printers kick the drawer automatically on print – enable in Windows printer preferences "Cash drawer: Open before printing"
 // Software kick fallback: ESC p 0 25 250
-ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar'|'en' = 'ar') => {
+ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') => {
   const isAr = lang === 'ar'
   const escapeHtml = (value: unknown) => String(value ?? '')
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&#039;')
-  const itemsHtml = (invoice.items || []).map((it:any) => `
-    <tr><td>${escapeHtml(it.name || it.sku)}</td><td>${Number(it.qty)}</td><td>${Number(it.unit_price)}</td><td>${(Number(it.unit_price)*Number(it.qty)).toFixed(2)}</td></tr>
+  const itemsHtml = (invoice.items || []).map((it: any) => `
+    <tr><td>${escapeHtml(it.name || it.sku)}</td><td>${Number(it.qty)}</td><td>${Number(it.unit_price)}</td><td>${(Number(it.unit_price) * Number(it.qty)).toFixed(2)}</td></tr>
   `).join('')
-  const html = `<!doctype html><html lang="${isAr?'ar':'en'}" dir="${isAr?'rtl':'ltr'}"><head><meta charset="utf-8">
+  const html = `<!doctype html><html lang="${isAr ? 'ar' : 'en'}" dir="${isAr ? 'rtl' : 'ltr'}"><head><meta charset="utf-8">
   <style>
     @page { size: 80mm auto; margin: 2mm; }
     body { font-family: 'Cairo', Arial, sans-serif; width: 72mm; margin:0; font-size: 12px; }
@@ -179,9 +179,9 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar'|'en' = 'ar') => 
     .small { font-size:10px; }
   </style></head><body>
   <h2>Bold</h2>
-  <div class="center small">ملابس رجالي – Men's Clothing<br/>${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br/>${new Date().toLocaleString(isAr?'ar-EG':'en-GB')}</div>
+  <div class="center small">Men's Wear<br/>${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br/>${new Date().toLocaleString(isAr ? 'ar-EG' : 'en-GB')}</div>
   <hr>
-  <table><thead><tr><th>${isAr?'الصنف':'Item'}</th><th>${isAr?'ك':'Q'}</th><th>${isAr?'السعر':'Price'}</th><th>${isAr?'الإجمالي':'Total'}</th></tr></thead>
+  <table><thead><tr><th>${isAr ? 'الصنف' : 'Item'}</th><th>${isAr ? 'ك' : 'Q'}</th><th>${isAr ? 'السعر' : 'Price'}</th><th>${isAr ? 'الإجمالي' : 'Total'}</th></tr></thead>
   <tbody>${itemsHtml}</tbody></table>
   <div class="totals">
     ${isAr ? 'الإجمالي' : 'Total'}: <b>${Number(invoice.total || 0).toFixed(2)} ${isAr ? 'ج' : 'EGP'}</b><br>
@@ -190,7 +190,7 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar'|'en' = 'ar') => 
   <hr>
   <div class="center small">${isAr ? 'سياسة الإرجاع: 14 يوم بحالة الشراء الأصلية' : 'Returns: 14 days original condition'}<br>شكراً لتسوقكم في Bold – Thank you</div>
   </body></html>`
-  const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: false }})
+  const printWin = new BrowserWindow({ show: false, webPreferences: { offscreen: false } })
   try {
     await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
     const result = await new Promise<{ success: boolean, reason?: string }>((resolve) => {
