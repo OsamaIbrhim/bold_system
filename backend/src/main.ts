@@ -22,11 +22,11 @@ async function bootstrap() {
     next();
   });
   app.useGlobalFilters(new ApiExceptionFilter());
-  const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3001,http://localhost:5173,file://,null')
+  const allowedOrigins = (process.env.CORS_ORIGINS || 'null')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
-  app.enableCors({ origin: allowedOrigins, credentials: false });
+  app.enableCors({ origin: allowedOrigins, credentials: true });
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
     forbidNonWhitelisted: true,
