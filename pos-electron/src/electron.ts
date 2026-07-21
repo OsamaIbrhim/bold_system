@@ -3,9 +3,18 @@ import { Product, SyncState } from './types'
 export type LocalSale = {
   sync_id: string
   invoice_number: string
+  local_invoice_number?: string
+  server_invoice_id?: string | null
+  server_invoice_number?: string | null
+  synced_at?: string | null
   total: number
   created_at: string
   sync_status: string
+  payment_method?: string
+  customer_phone?: string | null
+  attempt_count?: number
+  last_attempt_at?: string | null
+  last_error?: string | null
 }
 
 export type BoldBridge = {
@@ -30,7 +39,17 @@ export type BoldBridge = {
   local_sales(): Promise<LocalSale[]>
 
   sync_get_outbox(): Promise<any[]>
-  sync_mark_sent(ids: string[]): Promise<{ ok: boolean }>
+  sync_mark_sending(id: string): Promise<{ ok: boolean }>
+  sync_mark_sent(result: {
+    id: string
+    server_document_id?: string | null
+    server_document_number?: string | null
+  }): Promise<{ ok: boolean }>
+  sync_mark_failed(result: {
+    id: string
+    error: string
+    retryable: boolean
+  }): Promise<{ ok: boolean }>
   sync_apply_pull(data: unknown): Promise<{ ok: boolean }>
   sync_get_status(): Promise<SyncState>
   sync_set_status(

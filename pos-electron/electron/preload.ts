@@ -8,7 +8,12 @@ contextBridge.exposeInMainWorld('bold', {
     ipcRenderer.invoke('pos:print', invoice, lang),
   local_sales: () => ipcRenderer.invoke('pos:list_local_sales'),
   sync_get_outbox: () => ipcRenderer.invoke('sync:get_outbox'),
-  sync_mark_sent: (ids: string[]) => ipcRenderer.invoke('sync:mark_sent', ids),
+  sync_mark_sending: (id: string) =>
+    ipcRenderer.invoke('sync:mark_sending', id),
+  sync_mark_sent: (result: any) =>
+    ipcRenderer.invoke('sync:mark_sent', result),
+  sync_mark_failed: (result: any) =>
+    ipcRenderer.invoke('sync:mark_failed', result),
   sync_apply_pull: (data: any) => ipcRenderer.invoke('sync:apply_pull', data),
   sync_get_status: () => ipcRenderer.invoke('sync:get_status'),
   sync_set_status: (status: any) => ipcRenderer.invoke('sync:set_status', status),

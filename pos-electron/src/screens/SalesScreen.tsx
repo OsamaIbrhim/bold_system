@@ -21,6 +21,18 @@ import { OPERATIONS_PAGE_SIZE, pageWindow } from '../operations'
 
 type OperationsTab = 'sales' | 'returns'
 
+type LocalSaleView = LocalSale & {
+  local_invoice_number?: string
+  server_invoice_id?: string | null
+  server_invoice_number?: string | null
+  synced_at?: string | null
+  payment_method?: string
+  customer_phone?: string | null
+  attempt_count?: number
+  last_attempt_at?: string | null
+  last_error?: string | null
+}
+
 type ReturnableInvoiceItem = InvoiceItem & {
   returned_qty: number
   returnable_qty: number
@@ -34,6 +46,60 @@ type Notify = (
   message: string,
   tone?: 'success' | 'error' | 'info',
 ) => void
+
+function localSyncLabel(status: string) {
+  switch (status) {
+    case 'pending':
+      return 'معلّقة محليًا'
+    case 'sending':
+      return 'جارٍ الإرسال'
+    case 'failed':
+      return 'فشلت المزامنة'
+    case 'sent':
+      return 'تمت المزامنة'
+    default:
+      return status || 'محلية'
+  }
+}
+
+function localSyncBadgeStyle(status: string): React.CSSProperties {
+  if (status === 'failed') {
+    return {
+      display: 'inline-flex',
+      width: 'fit-content',
+      marginTop: 4,
+      padding: '3px 8px',
+      borderRadius: 20,
+      background: '#fee2e2',
+      color: '#b42318',
+      fontWeight: 800,
+    }
+  }
+
+  if (status === 'sending') {
+    return {
+      display: 'inline-flex',
+      width: 'fit-content',
+      marginTop: 4,
+      padding: '3px 8px',
+      borderRadius: 20,
+      background: '#e0f2fe',
+      color: '#075985',
+      fontWeight: 800,
+    }
+  }
+
+  return {
+    display: 'inline-flex',
+    width: 'fit-content',
+    marginTop: 4,
+    padding: '3px 8px',
+    borderRadius: 20,
+    background: '#fef3c7',
+    color: '#92400e',
+    fontWeight: 800,
+  }
+}
 
 export function SalesScreen({
   session,
@@ -72,7 +138,7 @@ export function SalesScreen({
   const [returnsLoading, setReturnsLoading] = useState(true)
   const [returnsError, setReturnsError] = useState('')
 
-  const [localSales, setLocalSales] = useState<LocalSale[]>([])
+  const [localSales, setLocalSales] = useState<LocalSaleView[]>([])
   const [selected, setSelected] = useState<Invoice | null>(null)
   const [returnInvoice, setReturnInvoice] =
     useState<ReturnableInvoice | null>(null)
@@ -155,6 +221,10 @@ export function SalesScreen({
     void refreshAll(1, 1)
   }, [])
 
+  useEffect(() => {
+    void loadLocalSales()
+  }, [syncState.sync_status, syncState.pending_count])
+
   const runSearch = async () => {
     setSalesPage(1)
     setReturnsPage(1)
@@ -200,6 +270,27 @@ export function SalesScreen({
   const pendingLocalCount = localSales.filter(
     (sale) => sale.sync_status !== 'sent',
   ).length
+
+  const visibleLocalSales = localSales.filter((sale) => {
+    if (sale.sync_status === 'sent') return false
+
+    const normalizedQuery = query.trim().toLowerCase()
+    const invoiceNumber = String(
+      sale.server_invoice_number ||
+        sale.invoice_number ||
+        sale.local_invoice_number ||
+        sale.sync_id,
+    ).toLowerCase()
+    const customerPhone = String(sale.customer_phone || '').toLowerCase()
+    const matchesQuery =
+      !normalizedQuery ||
+      invoiceNumber.includes(normalizedQuery) ||
+      customerPhone.includes(normalizedQuery)
+    const matchesMethod =
+      !method || sale.payment_method === method
+
+    return matchesQuery && matchesMethod
+  })
 
   const activeError =
     activeTab === 'sales'
@@ -283,7 +374,7 @@ export function SalesScreen({
             onClick={() => setActiveTab('sales')}
           >
             الفواتير
-            <span>{salesTotal}</span>
+            <span>{salesTotal + pendingLocalCount}</span>
           </button>
 
           <button
@@ -377,7 +468,75 @@ export function SalesScreen({
               </thead>
 
               <tbody>
-                {salesLoading && (
+                {visibleLocalSales.map((sale) => {
+                  const displayNumber =
+                    sale.server_invoice_number ||
+                    sale.invoice_number ||
+                    sale.local_invoice_number ||
+                    sale.sync_id
+
+                  return (
+                    <tr
+                      key={`local-${sale.sync_id}`}
+                      style={{ background: '#fffbeb' }}
+                    >
+                      <td>
+                        <b>{displayNumber}</b>
+                        <small style={localSyncBadgeStyle(sale.sync_status)}>
+                          {localSyncLabel(sale.sync_status)}
+                        </small>
+                        {!!sale.attempt_count && (
+                          <small>
+                            عدد المحاولات: {sale.attempt_count}
+                          </small>
+                        )}
+                      </td>
+
+                      <td>
+                        {new Date(sale.created_at).toLocaleString('ar-EG')}
+                      </td>
+
+                      <td>{sale.customer_phone || 'بدون عميل'}</td>
+
+                      <td>
+                        {sale.payment_method
+                          ? paymentLabel(sale.payment_method)
+                          : '—'}
+                      </td>
+
+                      <td>
+                        <b>{money(sale.total)} ج</b>
+                      </td>
+
+                      <td>{device.terminal_code}</td>
+
+                      <td>
+                        <div className="row-actions">
+                          {sale.sync_status === 'pending' && (
+                            <button type="button" onClick={onSync}>
+                              مزامنة
+                            </button>
+                          )}
+
+                          {sale.sync_status === 'sending' && (
+                            <small>جارٍ الإرسال…</small>
+                          )}
+
+                          {sale.sync_status === 'failed' && (
+                            <small
+                              title={sale.last_error || undefined}
+                              style={{ color: '#b42318', fontWeight: 800 }}
+                            >
+                              يحتاج مراجعة
+                            </small>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+
+                {salesLoading && !visibleLocalSales.length && (
                   <tr>
                     <td colSpan={7}>
                       <div className="table-loading">
@@ -443,7 +602,9 @@ export function SalesScreen({
                     </tr>
                   ))}
 
-                {!salesLoading && !serverSales.length && (
+                {!salesLoading &&
+                  !serverSales.length &&
+                  !visibleLocalSales.length && (
                   <tr>
                     <td colSpan={7}>
                       <div className="empty-state">

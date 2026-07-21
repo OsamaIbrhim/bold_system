@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { validAuth, validDevice } from './api'
+import {
+  terminalCredentialDisposition,
+  validAuth,
+  validDevice,
+} from './api'
 
 describe('POS secure startup state', () => {
   it('rejects the stale undefined branch value that previously bypassed login', () => {
@@ -12,6 +16,7 @@ describe('POS secure startup state', () => {
         terminal_code: 'POS-1',
       }),
     ).toBe(false)
+
     expect(
       validAuth({
         session: {
@@ -33,6 +38,7 @@ describe('POS secure startup state', () => {
         terminal_code: 'POS-1',
       }),
     ).toBe(true)
+
     expect(
       validAuth({
         session: {
@@ -43,5 +49,35 @@ describe('POS secure startup state', () => {
         offline_valid_until: '2026-07-20T00:00:00.000Z',
       }),
     ).toBe(true)
+  })
+})
+
+describe('POS terminal credential protection', () => {
+  it('never clears enrollment because of a generic network error', () => {
+    expect(
+      terminalCredentialDisposition('NETWORK_ERROR', '/terminals/heartbeat'),
+    ).toBe('ignore')
+  })
+
+  it('requires repeated heartbeat confirmation for invalid credentials', () => {
+    expect(
+      terminalCredentialDisposition(
+        'TERMINAL_CREDENTIAL_INVALID',
+        '/terminals/heartbeat',
+      ),
+    ).toBe('confirm')
+
+    expect(
+      terminalCredentialDisposition(
+        'TERMINAL_CREDENTIAL_INVALID',
+        '/pos/sale',
+      ),
+    ).toBe('ignore')
+  })
+
+  it('treats an explicit server revocation as definitive', () => {
+    expect(
+      terminalCredentialDisposition('TERMINAL_REVOKED', '/terminals/heartbeat'),
+    ).toBe('clear')
   })
 })

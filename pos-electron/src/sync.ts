@@ -1,4 +1,4 @@
-import { api } from './api'
+import { api, ApiError } from './api'
 import { bold, BoldBridge } from './electron'
 import { SyncState } from './types'
 
@@ -7,7 +7,9 @@ type SyncBridge = Pick<
   | 'sync_get_status'
   | 'sync_set_status'
   | 'sync_get_outbox'
+  | 'sync_mark_sending'
   | 'sync_mark_sent'
+  | 'sync_mark_failed'
   | 'sync_apply_pull'
 >
 
@@ -24,6 +26,31 @@ function errorMessage(error: unknown) {
     : String(
         error || 'Unknown synchronization error',
       )
+}
+
+export function isRetryableSyncError(error: unknown) {
+  if (error instanceof SyntaxError) return false
+  if (!(error instanceof ApiError)) return true
+  if (error.code === 'NETWORK_ERROR') return true
+  if (
+    [
+      'TERMINAL_NOT_ENROLLED',
+      'TERMINAL_CREDENTIAL_INVALID',
+      'TOKEN_EXPIRED',
+      'AUTH_EXPIRED',
+    ].includes(error.code)
+  ) {
+    return true
+  }
+  if (error.status === 408 || error.status === 429) return true
+  return !!error.status && error.status >= 500
+}
+
+function serverDocument(result: any) {
+  return {
+    server_document_id: result?.id || null,
+    server_document_number: result?.invoice_number || null,
+  }
 }
 
 async function publishHeartbeat(
@@ -67,6 +94,7 @@ export async function performSync(
 
   for (const item of outbox) {
     try {
+      await local.sync_mark_sending(item.id)
       const stored = JSON.parse(item.payload)
 
       // إزالة الحقول المحلية التي لا يقبلها Backend DTO
@@ -75,16 +103,28 @@ export async function performSync(
         ...payload
       } = stored
 
-      await client.sale(payload)
-      await local.sync_mark_sent([item.id])
+      const result = await client.sale(payload)
+      await local.sync_mark_sent({
+        id: item.id,
+        ...serverDocument(result),
+      })
     } catch (error) {
+      const retryable = isRetryableSyncError(error)
+      await local.sync_mark_failed({
+        id: item.id,
+        error: errorMessage(error),
+        retryable,
+      }).catch(() => undefined)
+
       const current =
         await local.sync_get_status()
 
       const failed: SyncState = {
         ...state,
         sync_status: 'error',
-        last_error: errorMessage(error),
+        last_error: retryable
+          ? errorMessage(error)
+          : `عملية مرفوضة وتحتاج مراجعة: ${errorMessage(error)}`,
         pending_count: current.pending_count,
       }
 
@@ -121,6 +161,19 @@ export async function performSync(
     ).catch(() => undefined)
 
     return pending
+  }
+
+  const unresolved = await local.sync_get_status()
+  if (unresolved.pending_count > 0) {
+    const failed: SyncState = {
+      ...state,
+      sync_status: 'error',
+      last_error: 'توجد عمليات فاشلة تحتاج مراجعة قبل اكتمال المزامنة.',
+      pending_count: unresolved.pending_count,
+    }
+    await local.sync_set_status(failed)
+    await publishHeartbeat(client, failed).catch(() => undefined)
+    return failed
   }
 
   let cursor = state.sync_cursor || null

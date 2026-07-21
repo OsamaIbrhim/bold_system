@@ -127,7 +127,13 @@ async function initDb() {
       type TEXT,
       payload TEXT,
       sync_status TEXT DEFAULT 'pending',
-      created_at TEXT
+      created_at TEXT,
+      attempt_count INTEGER DEFAULT 0,
+      last_attempt_at TEXT,
+      last_error TEXT,
+      server_document_id TEXT,
+      server_document_number TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS sales_local (
       sync_id TEXT PRIMARY KEY,
@@ -135,7 +141,10 @@ async function initDb() {
       total REAL,
       created_at TEXT,
       payment_method TEXT,
-      customer_phone TEXT
+      customer_phone TEXT,
+      server_invoice_id TEXT,
+      server_invoice_number TEXT,
+      synced_at TEXT
     );
     CREATE TABLE IF NOT EXISTS sync_meta (
       key TEXT PRIMARY KEY,
@@ -148,9 +157,26 @@ async function initDb() {
     `ALTER TABLE products ADD COLUMN name_ar TEXT`,
     `ALTER TABLE sales_local ADD COLUMN payment_method TEXT`,
     `ALTER TABLE sales_local ADD COLUMN customer_phone TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN server_invoice_id TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN server_invoice_number TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN synced_at TEXT`,
+    `ALTER TABLE outbox ADD COLUMN attempt_count INTEGER DEFAULT 0`,
+    `ALTER TABLE outbox ADD COLUMN last_attempt_at TEXT`,
+    `ALTER TABLE outbox ADD COLUMN last_error TEXT`,
+    `ALTER TABLE outbox ADD COLUMN server_document_id TEXT`,
+    `ALTER TABLE outbox ADD COLUMN server_document_number TEXT`,
+    `ALTER TABLE outbox ADD COLUMN updated_at TEXT`,
   ]) {
     try { db.exec(migration) } catch {}
   }
+
+  // A crash can leave an operation marked as sending after the server has
+  // accepted it. Retrying with the same sync_id is safe because sale creation
+  // is idempotent on the backend.
+  run(
+    `UPDATE outbox SET sync_status='pending',updated_at=? WHERE sync_status='sending'`,
+    [new Date().toISOString()],
+  )
 
   if (!getMeta('device_id')) setMeta('device_id', randomUUID())
   if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
@@ -201,7 +227,25 @@ ipcMain.handle('pos:stock', (_e, variantId: string) =>
 
 ipcMain.handle('pos:list_local_sales', () =>
   q(
-    `SELECT s.sync_id,s.invoice_number,s.total,s.created_at,s.payment_method,s.customer_phone,COALESCE(o.sync_status,'sent') AS sync_status FROM sales_local s LEFT JOIN outbox o ON o.id=s.sync_id ORDER BY s.created_at DESC LIMIT 100`,
+    `SELECT
+       s.sync_id,
+       s.invoice_number AS local_invoice_number,
+       COALESCE(s.server_invoice_number,s.invoice_number) AS invoice_number,
+       s.server_invoice_id,
+       s.server_invoice_number,
+       s.synced_at,
+       s.total,
+       s.created_at,
+       s.payment_method,
+       s.customer_phone,
+       COALESCE(o.sync_status,'sent') AS sync_status,
+       COALESCE(o.attempt_count,0) AS attempt_count,
+       o.last_attempt_at,
+       o.last_error
+     FROM sales_local s
+     LEFT JOIN outbox o ON o.id=s.sync_id
+     ORDER BY s.created_at DESC
+     LIMIT 100`,
   ),
 )
 
@@ -250,8 +294,8 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
       ],
     )
     run(
-      `INSERT INTO outbox (id,type,payload,sync_status,created_at) VALUES (?,?,?,?,?)`,
-      [syncId, 'sale', JSON.stringify({ ...command, sync_id: syncId }), 'pending', now],
+      `INSERT INTO outbox (id,type,payload,sync_status,created_at,updated_at) VALUES (?,?,?,?,?,?)`,
+      [syncId, 'sale', JSON.stringify({ ...command, sync_id: syncId }), 'pending', now, now],
     )
     db.exec('COMMIT')
     saveDb()
@@ -266,8 +310,89 @@ ipcMain.handle('sync:get_outbox', () =>
   q(`SELECT * FROM outbox WHERE sync_status='pending' ORDER BY created_at`),
 )
 
-ipcMain.handle('sync:mark_sent', (_e, ids: string[]) => {
-  for (const id of ids) run(`UPDATE outbox SET sync_status='sent' WHERE id=?`, [id])
+ipcMain.handle('sync:mark_sending', (_e, id: string) => {
+  const now = new Date().toISOString()
+  run(
+    `UPDATE outbox
+     SET sync_status='sending',
+         attempt_count=COALESCE(attempt_count,0)+1,
+         last_attempt_at=?,
+         last_error=NULL,
+         updated_at=?
+     WHERE id=? AND sync_status='pending'`,
+    [now, now, id],
+  )
+  if (db.getRowsModified() !== 1) {
+    throw new Error(`Outbox operation is not pending: ${id}`)
+  }
+  saveDb()
+  return { ok: true }
+})
+
+ipcMain.handle('sync:mark_sent', (_e, result: {
+  id: string,
+  server_document_id?: string | null,
+  server_document_number?: string | null,
+}) => {
+  const now = new Date().toISOString()
+  try {
+    db.exec('BEGIN IMMEDIATE TRANSACTION')
+    run(
+      `UPDATE outbox
+       SET sync_status='sent',
+           server_document_id=?,
+           server_document_number=?,
+           last_error=NULL,
+           updated_at=?
+       WHERE id=?`,
+      [
+        result.server_document_id || null,
+        result.server_document_number || null,
+        now,
+        result.id,
+      ],
+    )
+    run(
+      `UPDATE sales_local
+       SET server_invoice_id=?,
+           server_invoice_number=?,
+           synced_at=?
+       WHERE sync_id=?`,
+      [
+        result.server_document_id || null,
+        result.server_document_number || null,
+        now,
+        result.id,
+      ],
+    )
+    db.exec('COMMIT')
+    saveDb()
+    return { ok: true }
+  } catch (error) {
+    try { db.exec('ROLLBACK') } catch {}
+    throw error
+  }
+})
+
+ipcMain.handle('sync:mark_failed', (_e, input: {
+  id: string,
+  error: string,
+  retryable: boolean,
+}) => {
+  const now = new Date().toISOString()
+  run(
+    `UPDATE outbox
+     SET sync_status=?,
+         last_error=?,
+         updated_at=?
+     WHERE id=?`,
+    [
+      input.retryable ? 'pending' : 'failed',
+      String(input.error || 'Unknown synchronization error').slice(0, 1000),
+      now,
+      input.id,
+    ],
+  )
   saveDb()
   return { ok: true }
 })
@@ -280,7 +405,7 @@ ipcMain.handle('sync:get_status', () => ({
   last_sync_at: getMeta('last_sync_at') || null,
   last_error: getMeta('last_error') || null,
   pending_count: Number(
-    get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status='pending'`)?.count || 0,
+    get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending','failed')`)?.count || 0,
   ),
   sync_cursor: getMeta('sync_cursor') || null,
 }))
