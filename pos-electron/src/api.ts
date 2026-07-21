@@ -1,9 +1,13 @@
 import { DeviceCredential, Invoice, Session, Shift, ReturnRecord } from './types'
 import { bold } from './electron'
 
+const DEFAULT_API = import.meta.env.PROD
+  ? 'https://boldsystem-production.up.railway.app/api/v1'
+  : 'http://localhost:3000/api/v1'
+
 const API =
   (typeof localStorage !== 'undefined' && localStorage.getItem('bold_api')) ||
-  'http://localhost:3000/api/v1'
+  DEFAULT_API
 
 const REQUEST_TIMEOUT_MS = 15_000
 const TERMINAL_CONFIRMATION_DELAY_MS = 2_000
