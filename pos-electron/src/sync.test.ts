@@ -28,6 +28,7 @@ describe('Phase 5A synchronization', () => {
       last_error: null,
       pending_count: 1,
       sync_cursor: null,
+      catalog_valid_until: null,
     }
     let reads = 0
     const local: any = {
@@ -68,6 +69,7 @@ describe('Phase 5A synchronization', () => {
         cursor: 'cursor-1',
         has_more: false,
         server_time: '2026-07-21T00:00:00.000Z',
+        catalog_valid_until: '2026-07-22T00:00:00.000Z',
       }),
     }
 
@@ -83,5 +85,6 @@ describe('Phase 5A synchronization', () => {
     ])
     expect(result.sync_status).toBe('success')
     expect(result.pending_count).toBe(0)
+    expect(result.catalog_valid_until).toBe('2026-07-22T00:00:00.000Z')
   })
 })

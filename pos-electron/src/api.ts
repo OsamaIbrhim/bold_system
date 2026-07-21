@@ -6,7 +6,6 @@ const API =
   'http://localhost:3000/api/v1'
 
 const REQUEST_TIMEOUT_MS = 15_000
-const PRICING_TIMEOUT_MS = 800
 const TERMINAL_CONFIRMATION_DELAY_MS = 2_000
 const TERMINAL_CONFIRMATION_WINDOW_MS = 60_000
 
@@ -218,7 +217,6 @@ async function request<T = any>(
   path: string,
   init: RequestInit = {},
   retry = true,
-  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   let response: Response
 
@@ -237,7 +235,7 @@ async function request<T = any>(
         'x-request-id': crypto.randomUUID(),
         ...(init.headers || {}),
       },
-    }, timeoutMs)
+    })
   } catch {
     throw networkError()
   }
@@ -246,7 +244,7 @@ async function request<T = any>(
     const refresh = await refreshSession()
 
     if (refresh === 'refreshed') {
-      return request<T>(path, init, false, timeoutMs)
+      return request<T>(path, init, false)
     }
 
     if (refresh === 'network_error') {
@@ -449,28 +447,11 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  pricing: (variantId: string) => {
-    // Product prices are already stored in the local SQLite catalog by the
-    // sync pull. Never block barcode scanning while the device is offline.
-    if (!browserIsOnline()) {
-      return Promise.reject(
-        networkError('سيتم استخدام السعر المحفوظ على الجهاز في وضع عدم الاتصال.'),
-      )
-    }
-
-    // Online price refresh is best-effort only. The register already has a
-    // synchronized local price, so a slow/unreachable API must not delay the
-    // cashier for the normal 15-second request timeout.
-    return request<any>(
-      '/pricing/calculate',
-      {
-        method: 'POST',
-        body: JSON.stringify({ variant_id: variantId }),
-      },
-      true,
-      PRICING_TIMEOUT_MS,
-    )
-  },
+  pricing: (variantId: string) =>
+    request<any>('/pricing/calculate', {
+      method: 'POST',
+      body: JSON.stringify({ variant_id: variantId }),
+    }),
 
   customerLookup: (phone: string) =>
     request<any>(`/customers/lookup?phone=${encodeURIComponent(phone)}`),

@@ -98,10 +98,10 @@ export async function performSync(
       const stored = JSON.parse(item.payload)
 
       // إزالة الحقول المحلية التي لا يقبلها Backend DTO
-      const {
-        local_total: _localTotal,
-        ...payload
-      } = stored
+      const payload = {
+        ...stored,
+        local_total: Number(item.local_total ?? stored.local_total ?? 0),
+      }
 
       const result = await client.sale(payload)
       await local.sync_mark_sent({
@@ -204,6 +204,7 @@ export async function performSync(
     last_error: null,
     pending_count: 0,
     sync_cursor: cursor,
+    catalog_valid_until: response.catalog_valid_until || state.catalog_valid_until || null,
   }
 
   await local.sync_set_status(completed)

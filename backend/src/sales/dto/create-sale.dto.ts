@@ -3,10 +3,12 @@ import {
   ArrayMinSize,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -18,6 +20,30 @@ export class CreateSaleItemDto {
   @IsInt()
   @Min(1)
   qty: number;
+
+  // Optional only for replaying pre-Phase-5A outbox rows. New POS sales always
+  // provide the complete signed snapshot; mixed legacy/signed carts are rejected.
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  unit_price?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  unit_tax?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  price_version?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2048)
+  price_token?: string;
 }
 
 export class CreateSaleDto {
@@ -44,4 +70,10 @@ export class CreateSaleDto {
   @IsOptional()
   @IsIn(['ar', 'en'])
   language?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  local_total?: number;
 }

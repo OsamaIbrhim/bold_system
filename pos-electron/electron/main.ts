@@ -3,6 +3,11 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
 import { randomUUID } from 'crypto'
+import {
+  SIGNED_CATALOG_FORMAT_VERSION,
+  isValidSignedCatalogProduct,
+  requiresFullCatalogRefresh,
+} from './catalog-format'
 // @ts-ignore
 import initSqlJs from 'sql.js'
 
@@ -95,6 +100,30 @@ function getMeta(key: string) {
   return String(get(`SELECT value FROM sync_meta WHERE key=?`, [key])?.value || '')
 }
 
+function hasUnsignedCatalogProducts() {
+  return !!get(
+    `SELECT 1 AS found
+     FROM products
+     WHERE COALESCE(price_version,'')=''
+        OR COALESCE(price_token,'')=''
+        OR COALESCE(price_issued_at,'')=''
+     LIMIT 1`,
+  )?.found
+}
+
+function catalogNeedsFullRefresh() {
+  return requiresFullCatalogRefresh(
+    getMeta('catalog_format_version'),
+    hasUnsignedCatalogProducts() ? 1 : 0,
+  )
+}
+
+function requireFullCatalogRefresh() {
+  setMeta('catalog_format_version', '')
+  setMeta('sync_cursor', '')
+  setMeta('catalog_valid_until', '')
+}
+
 async function initDb() {
   const wasmPath = app.isPackaged
     ? path.join(process.resourcesPath, 'sql-wasm.wasm')
@@ -116,7 +145,10 @@ async function initDb() {
       color TEXT,
       cost_price REAL,
       selling_price REAL,
-      unit_tax REAL DEFAULT 0
+      unit_tax REAL DEFAULT 0,
+      price_version TEXT,
+      price_token TEXT,
+      price_issued_at TEXT
     );
     CREATE TABLE IF NOT EXISTS stock (
       variant_id TEXT PRIMARY KEY,
@@ -155,6 +187,9 @@ async function initDb() {
   for (const migration of [
     `ALTER TABLE products ADD COLUMN unit_tax REAL DEFAULT 0`,
     `ALTER TABLE products ADD COLUMN name_ar TEXT`,
+    `ALTER TABLE products ADD COLUMN price_version TEXT`,
+    `ALTER TABLE products ADD COLUMN price_token TEXT`,
+    `ALTER TABLE products ADD COLUMN price_issued_at TEXT`,
     `ALTER TABLE sales_local ADD COLUMN payment_method TEXT`,
     `ALTER TABLE sales_local ADD COLUMN customer_phone TEXT`,
     `ALTER TABLE sales_local ADD COLUMN server_invoice_id TEXT`,
@@ -181,6 +216,15 @@ async function initDb() {
   if (!getMeta('device_id')) setMeta('device_id', randomUUID())
   if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
   if (!getMeta('sync_status')) setMeta('sync_status', 'never')
+
+  // Databases created before signed price snapshots already contain products,
+  // but those rows do not have price_version/price_token. Keeping the old
+  // cursor would make the server return an empty delta forever. Force exactly
+  // one complete snapshot and only mark the new catalog format after that
+  // snapshot is validated and committed atomically.
+  if (catalogNeedsFullRefresh()) {
+    requireFullCatalogRefresh()
+  }
 
   saveDb()
 }
@@ -262,9 +306,23 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
   const items = sale.items.map((item: any) => ({
     variant_id: String(item.variant_id || ''),
     qty: Number(item.qty),
+    unit_price: Number(item.unit_price),
+    unit_tax: Number(item.unit_tax),
+    price_version: String(item.price_version || ''),
+    price_token: String(item.price_token || ''),
   }))
-  if (items.some((item: any) => !item.variant_id || !Number.isInteger(item.qty) || item.qty < 1)) {
-    throw new Error('Sale contains an invalid item quantity')
+  if (items.some((item: any) =>
+    !item.variant_id ||
+    !Number.isInteger(item.qty) ||
+    item.qty < 1 ||
+    !Number.isFinite(item.unit_price) ||
+    item.unit_price <= 0 ||
+    !Number.isFinite(item.unit_tax) ||
+    item.unit_tax < 0 ||
+    !item.price_version ||
+    !item.price_token
+  )) {
+    throw new Error('Sale contains an invalid or unsigned price snapshot')
   }
   const localTotal = Number(sale.local_total || 0)
   if (!Number.isFinite(localTotal) || localTotal < 0) throw new Error('Sale total is invalid')
@@ -307,7 +365,7 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
 })
 
 ipcMain.handle('sync:get_outbox', () =>
-  q(`SELECT * FROM outbox WHERE sync_status='pending' ORDER BY created_at`),
+  q(`SELECT o.*,s.total AS local_total FROM outbox o LEFT JOIN sales_local s ON s.sync_id=o.id WHERE o.sync_status='pending' ORDER BY o.created_at`),
 )
 
 ipcMain.handle('sync:mark_sending', (_e, id: string) => {
@@ -397,22 +455,34 @@ ipcMain.handle('sync:mark_failed', (_e, input: {
   return { ok: true }
 })
 
-ipcMain.handle('sync:get_status', () => ({
-  device_id: getMeta('device_id'),
-  terminal_name: getMeta('terminal_name'),
-  app_version: app.getVersion(),
-  sync_status: getMeta('sync_status') || 'never',
-  last_sync_at: getMeta('last_sync_at') || null,
-  last_error: getMeta('last_error') || null,
-  pending_count: Number(
-    get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending','failed')`)?.count || 0,
-  ),
-  sync_cursor: getMeta('sync_cursor') || null,
-}))
+ipcMain.handle('sync:get_status', () => {
+  const catalogRefreshRequired = catalogNeedsFullRefresh()
+
+  return {
+    device_id: getMeta('device_id'),
+    terminal_name: getMeta('terminal_name'),
+    app_version: app.getVersion(),
+    sync_status: getMeta('sync_status') || 'never',
+    last_sync_at: getMeta('last_sync_at') || null,
+    last_error: getMeta('last_error') || null,
+    pending_count: Number(
+      get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending','failed')`)?.count || 0,
+    ),
+    // Returning a null cursor makes the next normal sync request a full
+    // snapshot. This also self-heals a partially corrupted local catalog.
+    sync_cursor: catalogRefreshRequired
+      ? null
+      : getMeta('sync_cursor') || null,
+    catalog_valid_until: catalogRefreshRequired
+      ? null
+      : getMeta('catalog_valid_until') || null,
+  }
+})
 
 ipcMain.handle('sync:set_status', (_e, status: any) => {
   if (status.sync_status) setMeta('sync_status', String(status.sync_status))
   if (status.last_sync_at) setMeta('last_sync_at', String(status.last_sync_at))
+  if ('catalog_valid_until' in status) setMeta('catalog_valid_until', status.catalog_valid_until ? String(status.catalog_valid_until) : '')
   setMeta('last_error', status.last_error ? String(status.last_error).slice(0, 500) : '')
   saveDb()
   return { ok: true }
@@ -437,6 +507,28 @@ ipcMain.handle('secure:set_device', (_e, device: SecureState['device'] | null) =
 })
 
 ipcMain.handle('sync:apply_pull', (_e, data: any) => {
+  const products = Array.isArray(data?.products) ? data.products : []
+  const refreshRequired = catalogNeedsFullRefresh()
+
+  // Never advance an old cursor while the local database still requires the
+  // signed catalog format. A complete reset response is mandatory.
+  if (refreshRequired && !data?.reset_products) {
+    throw new Error(
+      'A complete signed catalog snapshot is required before delta synchronization',
+    )
+  }
+
+  // Validate the entire replacement before deleting the currently usable
+  // catalog. A malformed server response must leave the old database intact.
+  if (
+    data?.reset_products &&
+    products.some((product: any) => !isValidSignedCatalogProduct(product))
+  ) {
+    throw new Error(
+      'The server returned a catalog containing an invalid signed price snapshot',
+    )
+  }
+
   try {
     db.exec('BEGIN IMMEDIATE TRANSACTION')
     if (data.reset_products) db.exec('DELETE FROM products')
@@ -445,14 +537,15 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
       run(`DELETE FROM products WHERE id=?`, [id])
       run(`DELETE FROM stock WHERE variant_id=?`, [id])
     }
-    for (const p of data.products || []) {
+    for (const p of products) {
       run(
-        `INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT OR REPLACE INTO products (id,sku,name_en,name_ar,barcode_ean13,barcode_internal,size,color,cost_price,selling_price,unit_tax,price_version,price_token,price_issued_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           p.id, p.sku, p.name_en || '', p.name_ar || '',
           p.barcode_ean13 || null, p.barcode_internal || null,
           p.size || null, p.color || null, 0,
           Number(p.selling_price || 0), Number(p.unit_tax || 0),
+          p.price_version || null, p.price_token || null, p.price_issued_at || null,
         ],
       )
     }
@@ -462,7 +555,11 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
         s.qty_on_hand || 0,
       ])
     }
+    if (data.reset_products) {
+      setMeta('catalog_format_version', SIGNED_CATALOG_FORMAT_VERSION)
+    }
     if (data.cursor !== undefined) setMeta('sync_cursor', String(data.cursor))
+    if (data.catalog_valid_until !== undefined) setMeta('catalog_valid_until', String(data.catalog_valid_until || ''))
     db.exec('COMMIT')
     saveDb()
     return { ok: true }

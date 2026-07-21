@@ -43,6 +43,9 @@ export type Product = {
   color?: string | null
   selling_price?: number | string
   unit_tax?: number | string
+  price_version?: string | null
+  price_token?: string | null
+  price_issued_at?: string | null
   qty?: number | string
 }
 
@@ -63,6 +66,10 @@ export type Customer = {
   total_invoices?: number
   total_spent?: number | string
   is_vip?: boolean
+}
+
+export type ReturnedInvoiceItem = {
+  qty: number
 }
 
 export type InvoiceItem = {
@@ -97,7 +104,7 @@ export type Invoice = {
   status: string
   customer?: Customer | null
   cashier_id?: string
-  terminal?: { id: string, terminal_code: string, name: string } | null
+  terminal?: { id: string; terminal_code: string; name: string } | null
   items?: InvoiceItem[]
   original_returns?: ReturnRecord[]
   _count?: {
@@ -115,6 +122,7 @@ export type SyncState = {
   last_error: string | null
   pending_count: number
   sync_cursor?: string | null
+  catalog_valid_until?: string | null
 }
 
 export type AppView = 'register' | 'sales'
@@ -152,15 +160,11 @@ export type ReturnRecord = {
       id: string
       name?: string | null
       phone: string
-      } | null
+    } | null
     terminal?: {
       id: string
       terminal_code: string
       name: string
-      } | null
+    } | null
   }
-}
-
-export type ReturnedInvoiceItem = {
-  qty: number
 }
