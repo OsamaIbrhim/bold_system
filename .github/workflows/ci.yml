@@ -21,6 +21,10 @@ jobs:
       DATABASE_URL: postgresql://user:password@localhost:5432/bold
       DIRECT_URL: postgresql://user:password@localhost:5432/bold
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      PRICE_SNAPSHOT_KEYS: price-ci-202607=8a93d2f15b7c4e609d2a8f3c6e1b75049c2d8e6f1a7b3905d4c8e2f6a1b7d903
+      POS_OFFLINE_TICKET_KEYS: offline-ci-202607=4f7b1d8e93c2a6507d4e9f1b6c8a3052e7d9b4f1c6a8e2035d7f9b2c4a6e8013
+      POS_OFFLINE_TICKET_TTL_MS: 86400000
+      POS_OFFLINE_CLOCK_SKEW_MS: 300000
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -88,6 +92,10 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      PRICE_SNAPSHOT_KEYS: price-ci-202607=8a93d2f15b7c4e609d2a8f3c6e1b75049c2d8e6f1a7b3905d4c8e2f6a1b7d903
+      POS_OFFLINE_TICKET_KEYS: offline-ci-202607=4f7b1d8e93c2a6507d4e9f1b6c8a3052e7d9b4f1c6a8e2035d7f9b2c4a6e8013
+      POS_OFFLINE_TICKET_TTL_MS: 86400000
+      POS_OFFLINE_CLOCK_SKEW_MS: 300000
       PERF_LOGIN_PHONE: +200100000000
       PERF_LOGIN_PASSWORD: Bold1234
       PERF_SMOKE: 1
@@ -137,6 +145,10 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_perf
       JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      PRICE_SNAPSHOT_KEYS: price-ci-202607=8a93d2f15b7c4e609d2a8f3c6e1b75049c2d8e6f1a7b3905d4c8e2f6a1b7d903
+      POS_OFFLINE_TICKET_KEYS: offline-ci-202607=4f7b1d8e93c2a6507d4e9f1b6c8a3052e7d9b4f1c6a8e2035d7f9b2c4a6e8013
+      POS_OFFLINE_TICKET_TTL_MS: 86400000
+      POS_OFFLINE_CLOCK_SKEW_MS: 300000
       PERF_LOGIN_PHONE: +200100000000
       PERF_LOGIN_PASSWORD: Bold1234
       PERF_CONCURRENCY: 25
