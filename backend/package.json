@@ -12,13 +12,16 @@
     "start:prod": "node dist/src/main.js",
     "test": "jest --runInBand",
     "test:soft": "npm test -- --runInBand && npm run build",
-    "test:hard": "node perf/hard-load.mjs",
-    "test:hard:smoke": "PERF_SMOKE=1 node perf/hard-load.mjs",
+    "test:hard": "node perf/hard-load.mjs && node perf/inventory-ledger-smoke.mjs",
+    "test:hard:smoke": "PERF_SMOKE=1 node perf/hard-load.mjs && node perf/inventory-ledger-smoke.mjs",
     "perf:seed": "node perf/volume-seed.mjs",
     "test:watch": "jest --watch",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "ts-node prisma/seed.ts"
+    "prisma:seed": "ts-node prisma/reset-inventory-ledger.ts && ts-node prisma/seed.ts && node prisma/ensure-seeded-inventory-ledger.mjs"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/reset-inventory-ledger.ts && ts-node prisma/seed.ts && node prisma/ensure-seeded-inventory-ledger.mjs"
   },
   "dependencies": {
     "@nestjs/common": "11.1.28",

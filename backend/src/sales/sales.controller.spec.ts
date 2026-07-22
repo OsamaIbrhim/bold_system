@@ -27,6 +27,10 @@ describe('SalesController POS terminal enforcement', () => {
       createReturn: jest.fn().mockResolvedValue({ id: 'return-1' }),
       findReturnableInvoice: jest.fn().mockResolvedValue({ id: 'invoice-1' }),
     } as any;
+    const reads = {
+      listSales: jest.fn(),
+      invalidateCounts: jest.fn(),
+    } as any;
     const terminal = {
       id: 'terminal-1',
       branch_id: 'branch-1',
@@ -36,15 +40,21 @@ describe('SalesController POS terminal enforcement', () => {
       authenticate: jest.fn().mockResolvedValue(terminal),
     } as any;
     return {
-      controller: new SalesController(sales, {} as any, terminals),
+      controller: new SalesController(
+        sales,
+        reads,
+        {} as any,
+        terminals,
+      ),
       sales,
+      reads,
       terminals,
       terminal,
     };
   }
 
-  it('authenticates the enrolled terminal and passes its trusted server record to sale creation', async () => {
-    const { controller, sales, terminals, terminal } = subject();
+  it('authenticates the enrolled terminal, creates the sale, and invalidates list counts', async () => {
+    const { controller, sales, reads, terminals, terminal } = subject();
     await controller.sale(sale, 'device-1', 'secret-1', request(cashier));
     expect(terminals.authenticate).toHaveBeenCalledWith(
       'device-1',
@@ -52,6 +62,7 @@ describe('SalesController POS terminal enforcement', () => {
       cashier,
     );
     expect(sales.createSale).toHaveBeenCalledWith(sale, cashier, terminal);
+    expect(reads.invalidateCounts).toHaveBeenCalledTimes(1);
   });
 
   it('authenticates the enrolled terminal before a return or invoice lookup', async () => {

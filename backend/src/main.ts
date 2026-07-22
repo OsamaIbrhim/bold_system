@@ -7,8 +7,11 @@ import { ApiExceptionFilter } from './common/api-error.filter';
 import compression from 'compression';
 import { apiJsonReplacer } from './common/json-serialization';
 import { validateRuntimeEnvironment } from './config/environment';
+import { configureDatabaseConnection } from './config/database-connection';
 
 async function bootstrap() {
+  // Bound and normalize the Prisma pool before PrismaClient reads DATABASE_URL.
+  configureDatabaseConnection();
   // Validate every security-critical setting before Nest constructs providers or
   // opens a database connection. Configuration errors must fail the deployment.
   const environment = validateRuntimeEnvironment();

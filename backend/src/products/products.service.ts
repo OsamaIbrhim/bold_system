@@ -1,11 +1,13 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateVariantDto } from './dto/product.dto';
+
 @Injectable()
 export class ProductsService {
   private readonly countCache = new Map<string, { expiresAt: number; value: Promise<number> }>();
 
   constructor(private prisma: PrismaService) {}
+
   async list(q: string, page: number, pageSize: number, branchId?: string, includeCost = false) {
     const query = q.trim();
     const where = query ? {
@@ -18,23 +20,22 @@ export class ProductsService {
         { product: { name_ar: { contains: query, mode: 'insensitive' as const } } },
       ],
     } : { product: { is_active: true } };
-    // List/count consistency to the exact millisecond is not a business
-    // invariant. Avoid a read transaction that pins one pool connection while
-    // two independent queries run, and coalesce repeated identical counts.
-    const [total, variants] = await Promise.all([
+
+    // Keep list and count independent, then hydrate both relations in one
+    // additional parallel database wave. Prisma's nested include strategy used
+    // sequential relation queries and paid the remote DB round-trip repeatedly.
+    const [total, baseVariants] = await Promise.all([
       this.cachedCount(query, where),
       this.prisma.productVariant.findMany({
         where,
-        include: {
-          product: true,
-          inventory: branchId ? { where: { branch_id: branchId } } : true,
-        },
         orderBy: [{ created_at: 'desc' }, { id: 'asc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
     ]);
+    const variants = await this.hydrateVariants(baseVariants, branchId);
     const items = variants.map((variant) => this.present(variant, branchId, includeCost));
+
     let suggestions: { value: string; label: string }[] = [];
     if (query.length >= 2 && total === 0) {
       const similar = await this.prisma.$queryRaw<Array<{ name_en: string; name_ar: string | null; sku: string; score: number }>>`
@@ -57,6 +58,7 @@ export class ProductsService {
         .filter((item) => !seen.has(item.value) && !!seen.add(item.value))
         .slice(0, 3);
     }
+
     return {
       items,
       page,
@@ -65,6 +67,38 @@ export class ProductsService {
       total_pages: Math.max(1, Math.ceil(total / pageSize)),
       suggestions,
     };
+  }
+
+  private async hydrateVariants(variants: any[], branchId?: string) {
+    if (!variants.length) return [];
+
+    const variantIds = variants.map((variant) => variant.id);
+    const productIds = [...new Set(variants.map((variant) => variant.product_id))];
+    const [products, inventory] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { id: { in: productIds } },
+      }),
+      this.prisma.inventoryStock.findMany({
+        where: {
+          variant_id: { in: variantIds },
+          ...(branchId ? { branch_id: branchId } : {}),
+        },
+      }),
+    ]);
+
+    const productById = new Map(products.map((product) => [product.id, product]));
+    const inventoryByVariant = new Map<string, any[]>();
+    for (const row of inventory) {
+      const rows = inventoryByVariant.get(row.variant_id) || [];
+      rows.push(row);
+      inventoryByVariant.set(row.variant_id, rows);
+    }
+
+    return variants.map((variant) => ({
+      ...variant,
+      product: productById.get(variant.product_id),
+      inventory: inventoryByVariant.get(variant.id) || [],
+    }));
   }
 
   private cachedCount(query: string, where: any) {
@@ -83,8 +117,6 @@ export class ProductsService {
       if (this.countCache.get(key)?.value === value) this.countCache.delete(key);
       throw error;
     });
-    // An in-flight count never expires; all concurrent callers share it. The
-    // short TTL starts only after the database query has completed.
     this.countCache.set(key, { expiresAt: Number.POSITIVE_INFINITY, value });
     if (this.countCache.size > 200) this.countCache.delete(this.countCache.keys().next().value!);
     return value;
@@ -95,7 +127,7 @@ export class ProductsService {
   }
 
   async search(q: string, branchId?: string, includeCost = false) {
-    const variants = await this.prisma.productVariant.findMany({
+    const baseVariants = await this.prisma.productVariant.findMany({
       where: {
         OR: [
           { sku: { contains: q, mode: 'insensitive' } },
@@ -104,12 +136,9 @@ export class ProductsService {
           { product: { name_en: { contains: q, mode: 'insensitive' } } }
         ]
       },
-      include: {
-        product: true,
-        inventory: branchId ? { where: { branch_id: branchId } } : true,
-      },
       take: 20,
     });
+    const variants = await this.hydrateVariants(baseVariants, branchId);
     return variants.map((variant) => this.present(variant, branchId, includeCost));
   }
 
@@ -125,6 +154,7 @@ export class ProductsService {
     const { cost_price: _costPrice, ...safe } = result;
     return safe;
   }
+
   async createProduct(dto: CreateProductDto) {
     const product = await this.prisma.product.create({
       data: {
@@ -150,6 +180,7 @@ export class ProductsService {
     this.invalidateCounts();
     return product;
   }
+
   async updateVariant(id: string, dto: UpdateVariantDto) {
     const exists = await this.prisma.productVariant.findUnique({ where: { id }});
     if (!exists) throw new NotFoundException('Variant not found');
@@ -166,10 +197,10 @@ export class ProductsService {
       }
     });
   }
+
   async removeVariant(id: string) {
-    // prevent delete if stock exists or sales exist
     const stock = await this.prisma.inventoryStock.findMany({ where: { variant_id: id }});
-    const totalStock = stock.reduce((s, i) => s + i.qty_on_hand, 0);
+    const totalStock = stock.reduce((sum, item) => sum + item.qty_on_hand, 0);
     if (totalStock > 0) throw new BadRequestException('Cannot delete – stock exists: ' + totalStock + ' pcs. Adjust inventory to 0 first.');
     const salesCount = await this.prisma.salesInvoiceItem.count({ where: { variant_id: id }});
     if (salesCount > 0) throw new BadRequestException('Cannot delete – variant has sales history. Deactivate product instead.');

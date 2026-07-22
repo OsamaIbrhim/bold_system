@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import { createHash } from 'node:crypto'
+import { ensureSeededInventoryLedger } from '../prisma/ensure-seeded-inventory-ledger.mjs'
 
 const databaseUrl = process.env.DATABASE_URL || ''
 if (!databaseUrl.includes('bold_perf') && process.env.PERF_ALLOW_VOLUME_SEED !== '1') {
@@ -59,6 +60,10 @@ for (let offset = 0; offset < productCount; offset += batchSize) {
   process.stdout.write(`\rproducts ${Math.min(offset + size, productCount)}/${productCount}`)
 }
 process.stdout.write('\n')
+
+// InventoryStock is a materialized balance. Every newly seeded non-zero row must
+// receive an opening movement before historical invoice fixtures are inserted.
+await ensureSeededInventoryLedger(prisma, 'volume-seed')
 
 for (let offset = 0; offset < invoiceCount; offset += batchSize) {
   const size = Math.min(batchSize, invoiceCount - offset)

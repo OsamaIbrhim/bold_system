@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common'
 import { Request, Response } from 'express'
 import { SalesService } from './sales.service'
+import { SalesReadService } from './sales-read.service'
 import { InvoicePdfService } from './invoice-pdf.service'
 import { Roles } from '../auth/roles.guard'
 import { CreateSaleDto } from './dto/create-sale.dto'
@@ -27,6 +28,7 @@ import { ListReturnsDto } from './dto/list-returns.dto'
 export class SalesController {
   constructor(
     private svc: SalesService,
+    private reads: SalesReadService,
     private pdfService: InvoicePdfService,
     private terminals: TerminalsService,
   ) {}
@@ -43,7 +45,7 @@ export class SalesController {
       ['owner'],
     )
 
-    return this.svc.listSales(dto, branchId)
+    return this.reads.listSales(dto, branchId)
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
@@ -69,11 +71,13 @@ export class SalesController {
       req.user,
     )
 
-    return this.svc.createSale(
+    const result = await this.svc.createSale(
       dto,
       req.user,
       terminal,
     )
+    this.reads.invalidateCounts()
+    return result
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
