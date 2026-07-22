@@ -1,4 +1,15 @@
-import { DeviceCredential, Invoice, Session, Shift, ReturnRecord } from './types'
+import {
+  DeviceCredential,
+  Invoice,
+  OfflineAccountingContext,
+  ReturnRecord,
+  Session,
+  Shift,
+} from './types'
+import {
+  isValidOfflineAccountingContext,
+  offlineAccountingContextMatches,
+} from '../electron/offline-accounting'
 import { bold } from './electron'
 
 const DEFAULT_API = import.meta.env.PROD
@@ -20,7 +31,11 @@ const TERMINAL_INVALID_CODES = new Set([
 ])
 
 type PersistedAuth = { session: Session; offline_valid_until: string }
-type SecureState = { auth?: PersistedAuth; device?: DeviceCredential }
+type SecureState = {
+  auth?: PersistedAuth
+  device?: DeviceCredential
+  accounting?: OfflineAccountingContext
+}
 type RefreshResult = 'refreshed' | 'rejected' | 'network_error'
 type TerminalEvidence = {
   code: string
@@ -56,6 +71,7 @@ export class ApiError extends Error {
 let session: Session | null = null
 let persistedAuth: PersistedAuth | null = null
 let device: DeviceCredential | null = null
+let accountingContext: OfflineAccountingContext | null = null
 let refreshPromise: Promise<RefreshResult> | null = null
 let terminalEvidence: TerminalEvidence | null = null
 
@@ -87,6 +103,31 @@ export function validAuth(value: any): value is PersistedAuth {
     validString(value.session.user?.id) &&
     validString(value.session.user?.branch_id)
   )
+}
+
+export function validOfflineAccountingContext(
+  value: unknown,
+  nowMs = Date.now(),
+) {
+  return isValidOfflineAccountingContext(value, nowMs)
+}
+
+function currentContextMatches(
+  context: unknown,
+  shift: Pick<Shift, 'id' | 'branch_id'>,
+  minimumRemainingMs = 0,
+) {
+  return !!session && !!device && offlineAccountingContextMatches(
+    context,
+    { session, device, shift },
+    Date.now(),
+    minimumRemainingMs,
+  )
+}
+
+async function clearAccountingContext() {
+  accountingContext = null
+  await bold.secure_set_accounting(null).catch(() => undefined)
 }
 
 export function terminalCredentialDisposition(
@@ -176,6 +217,7 @@ async function saveSession(value: Session) {
 async function clearSession() {
   session = null
   persistedAuth = null
+  accountingContext = null
   await bold.secure_set_auth(null).catch(() => undefined)
   window.dispatchEvent(new Event('bold-auth-expired'))
 }
@@ -183,8 +225,11 @@ async function clearSession() {
 async function clearDevice() {
   device = null
   terminalEvidence = null
+  accountingContext = null
   await bold.secure_set_device(null).catch(() => undefined)
-  await clearSession()
+  session = null
+  persistedAuth = null
+  window.dispatchEvent(new Event('bold-auth-expired'))
   window.dispatchEvent(new Event('bold-terminal-invalid'))
 }
 
@@ -291,6 +336,10 @@ export const api = {
     }
 
     const secure = (await bold.secure_get()) as SecureState
+    device = null
+    session = null
+    persistedAuth = null
+    accountingContext = null
 
     if (validDevice(secure.device)) device = secure.device
     else if (secure.device) await bold.secure_set_device(null)
@@ -326,9 +375,26 @@ export const api = {
       await bold.secure_set_auth(null)
     }
 
+    if (
+      session &&
+      device &&
+      secure.accounting &&
+      isValidOfflineAccountingContext(secure.accounting) &&
+      secure.accounting.user_id === session.user.id &&
+      secure.accounting.role === session.user.role &&
+      secure.accounting.branch_id === session.user.branch_id &&
+      secure.accounting.branch_id === device.branch_id &&
+      secure.accounting.terminal_id === device.terminal_id
+    ) {
+      accountingContext = secure.accounting
+    } else if (secure.accounting) {
+      await bold.secure_set_accounting(null)
+    }
+
     return {
       device,
       session,
+      accountingContext,
       user: session?.user || null,
       offline: !!session && !navigator.onLine,
     }
@@ -374,6 +440,7 @@ export const api = {
       terminal_id: result.terminal.id,
       terminal_code: result.terminal.terminal_code,
     }
+    accountingContext = null
     await bold.secure_set_device(device)
     return device
   },
@@ -420,6 +487,7 @@ export const api = {
       })
     }
 
+    await clearAccountingContext()
     await saveSession(value)
     return value
   },
@@ -502,6 +570,42 @@ export const api = {
     request<Shift | null>(
       `/shifts/current?branch_id=${encodeURIComponent(branchId)}`,
     ),
+
+  offlineContextFor: (shift: Pick<Shift, 'id' | 'branch_id'>) =>
+    currentContextMatches(accountingContext, shift)
+      ? accountingContext
+      : null,
+
+  ensureOfflineAccountingContext: async (
+    shift: Pick<Shift, 'id' | 'branch_id'>,
+  ) => {
+    const refreshBeforeMs = 15 * 60 * 1000
+    if (currentContextMatches(accountingContext, shift, refreshBeforeMs)) {
+      return accountingContext!
+    }
+    if (!session || !device) {
+      throw new ApiError({
+        code: 'OFFLINE_ACCOUNTING_IDENTITY_REQUIRED',
+        message_ar: 'يجب تسجيل دخول الكاشير وتسجيل الجهاز قبل تجهيز وضع البيع دون اتصال.',
+      })
+    }
+
+    const issued = await request<OfflineAccountingContext>(
+      `/shifts/${encodeURIComponent(shift.id)}/offline-context`,
+      { method: 'POST' },
+    )
+    if (!offlineAccountingContextMatches(issued, { session, device, shift })) {
+      throw new ApiError({
+        code: 'OFFLINE_ACCOUNTING_CONTEXT_INVALID',
+        message_ar: 'أعاد الخادم تفويضًا لا يطابق الكاشير أو الجهاز أو الوردية الحالية.',
+      })
+    }
+    await bold.secure_set_accounting(issued)
+    accountingContext = issued
+    return issued
+  },
+
+  clearOfflineAccountingContext: clearAccountingContext,
 
   openShift: (branchId: string, openingCash: number) =>
     request<Shift>('/shifts/open', {

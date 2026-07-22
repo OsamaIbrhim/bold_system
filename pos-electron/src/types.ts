@@ -11,6 +11,23 @@ export type Session = {
   user: User
 }
 
+
+export type OfflineAccountingContext = {
+  v: 1
+  purpose: 'pos-offline-accounting'
+  key_id: string
+  token: string
+  session_id: string
+  user_id: string
+  role: 'branch_manager' | 'cashier'
+  branch_id: string
+  terminal_id: string
+  shift_id: string
+  issued_at: string
+  expires_at: string
+  server_last_sale_sequence: string
+}
+
 export type DeviceCredential = {
   device_id: string
   device_token: string
@@ -96,6 +113,11 @@ export type Invoice = {
   id: string
   invoice_number: string
   branch_id: string
+  occurred_at?: string
+  received_at?: string
+  shift_id?: string | null
+  offline_session_id?: string | null
+  terminal_sequence?: string | number | null
   created_at: string
   subtotal: number | string
   tax_amount: number | string
@@ -104,6 +126,9 @@ export type Invoice = {
   status: string
   customer?: Customer | null
   cashier_id?: string
+  cashier?: { id: string; name: string; role: string } | null
+  receiver?: { id: string; name: string; role: string } | null
+  shift?: Shift | null
   terminal?: { id: string; terminal_code: string; name: string } | null
   items?: InvoiceItem[]
   original_returns?: ReturnRecord[]
@@ -121,6 +146,7 @@ export type SyncState = {
   last_sync_at: string | null
   last_error: string | null
   pending_count: number
+  terminal_sale_sequence?: string
   sync_cursor?: string | null
   catalog_valid_until?: string | null
 }

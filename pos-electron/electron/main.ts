@@ -4,6 +4,13 @@ import * as fs from 'fs'
 import * as os from 'os'
 import { randomUUID } from 'crypto'
 import {
+  isValidOfflineAccountingContext,
+  maxTerminalSequence,
+  nextTerminalSequence,
+  offlineAccountingContextMatches,
+  OfflineAccountingContext,
+} from './offline-accounting'
+import {
   SIGNED_CATALOG_FORMAT_VERSION,
   isValidSignedCatalogProduct,
   requiresFullCatalogRefresh,
@@ -31,14 +38,66 @@ function saveDb() {
   fs.renameSync(temporary, target)
 }
 type SecureState = {
-  auth?: any,
+  auth?: {
+    session?: {
+      user?: {
+        id?: string
+        role?: string
+        branch_id?: string
+      }
+    }
+  }
   device?: {
-    device_id: string,
-    device_token: string,
-    branch_id: string,
-    terminal_id: string,
-    terminal_code: string,
-  },
+    device_id: string
+    device_token: string
+    branch_id: string
+    terminal_id: string
+    terminal_code: string
+  }
+  accounting?: OfflineAccountingContext
+}
+
+
+function highestStoredSaleSequence() {
+  return String(
+    get(
+      `SELECT terminal_sequence
+       FROM sales_local
+       WHERE terminal_sequence IS NOT NULL
+         AND terminal_sequence <> ''
+       ORDER BY LENGTH(terminal_sequence) DESC, terminal_sequence DESC
+       LIMIT 1`,
+    )?.terminal_sequence || '0',
+  )
+}
+
+function alignLocalSequence(context?: OfflineAccountingContext | null) {
+  if (!context || !isValidOfflineAccountingContext(context)) return
+  setMeta(
+    'terminal_sale_sequence',
+    maxTerminalSequence(
+      getMeta('terminal_sale_sequence'),
+      context.server_last_sale_sequence,
+    ),
+  )
+}
+
+function updateSecureAcknowledgedSequence(sequence: string) {
+  try {
+    const state = readSecureState()
+    if (!state.accounting || !isValidOfflineAccountingContext(state.accounting)) {
+      return
+    }
+    state.accounting.server_last_sale_sequence = maxTerminalSequence(
+      state.accounting.server_last_sale_sequence,
+      sequence,
+    )
+    writeSecureState(state)
+  } catch {
+    // The SQLite sequence remains authoritative for this installation. The
+    // secure copy is updated on a best-effort basis to help recovery after a
+    // local database restore.
+  }
 }
 
 function readSecureState(): SecureState {
@@ -165,6 +224,7 @@ async function initDb() {
       last_error TEXT,
       server_document_id TEXT,
       server_document_number TEXT,
+      terminal_sequence TEXT,
       updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS sales_local (
@@ -172,8 +232,13 @@ async function initDb() {
       invoice_number TEXT,
       total REAL,
       created_at TEXT,
+      occurred_at TEXT,
       payment_method TEXT,
       customer_phone TEXT,
+      cashier_id TEXT,
+      shift_id TEXT,
+      offline_session_id TEXT,
+      terminal_sequence TEXT,
       server_invoice_id TEXT,
       server_invoice_number TEXT,
       synced_at TEXT
@@ -195,11 +260,17 @@ async function initDb() {
     `ALTER TABLE sales_local ADD COLUMN server_invoice_id TEXT`,
     `ALTER TABLE sales_local ADD COLUMN server_invoice_number TEXT`,
     `ALTER TABLE sales_local ADD COLUMN synced_at TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN occurred_at TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN cashier_id TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN shift_id TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN offline_session_id TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN terminal_sequence TEXT`,
     `ALTER TABLE outbox ADD COLUMN attempt_count INTEGER DEFAULT 0`,
     `ALTER TABLE outbox ADD COLUMN last_attempt_at TEXT`,
     `ALTER TABLE outbox ADD COLUMN last_error TEXT`,
     `ALTER TABLE outbox ADD COLUMN server_document_id TEXT`,
     `ALTER TABLE outbox ADD COLUMN server_document_number TEXT`,
+    `ALTER TABLE outbox ADD COLUMN terminal_sequence TEXT`,
     `ALTER TABLE outbox ADD COLUMN updated_at TEXT`,
   ]) {
     try { db.exec(migration) } catch {}
@@ -216,6 +287,14 @@ async function initDb() {
   if (!getMeta('device_id')) setMeta('device_id', randomUUID())
   if (!getMeta('terminal_name')) setMeta('terminal_name', os.hostname() || 'Bold POS')
   if (!getMeta('sync_status')) setMeta('sync_status', 'never')
+  setMeta(
+    'terminal_sale_sequence',
+    maxTerminalSequence(
+      getMeta('terminal_sale_sequence'),
+      highestStoredSaleSequence(),
+    ),
+  )
+  alignLocalSequence(readSecureState().accounting)
 
   // Databases created before signed price snapshots already contain products,
   // but those rows do not have price_version/price_token. Keeping the old
@@ -280,15 +359,20 @@ ipcMain.handle('pos:list_local_sales', () =>
        s.synced_at,
        s.total,
        s.created_at,
+       COALESCE(s.occurred_at,s.created_at) AS occurred_at,
        s.payment_method,
        s.customer_phone,
+       s.cashier_id,
+       s.shift_id,
+       s.offline_session_id,
+       s.terminal_sequence,
        COALESCE(o.sync_status,'sent') AS sync_status,
        COALESCE(o.attempt_count,0) AS attempt_count,
        o.last_attempt_at,
        o.last_error
      FROM sales_local s
      LEFT JOIN outbox o ON o.id=s.sync_id
-     ORDER BY s.created_at DESC
+     ORDER BY COALESCE(s.occurred_at,s.created_at) DESC
      LIMIT 100`,
   ),
 )
@@ -296,13 +380,45 @@ ipcMain.handle('pos:list_local_sales', () =>
 ipcMain.handle('pos:sale', (_e, sale: any) => {
   const syncId = String(sale?.sync_id || randomUUID())
   const existing = get(
-    `SELECT sync_id,invoice_number,total FROM sales_local WHERE sync_id=?`,
+    `SELECT sync_id,invoice_number,total,terminal_sequence,
+            COALESCE(occurred_at,created_at) AS occurred_at
+     FROM sales_local
+     WHERE sync_id=?`,
     [syncId],
   )
   if (existing) return { ...existing, ok: true, replayed: true }
+
+  const secure = readSecureState()
+  const authSession = secure.auth?.session
+  const context = secure.accounting
+  const device = secure.device
+  const shift = context
+    ? { id: context.shift_id, branch_id: context.branch_id }
+    : null
+  if (
+    !authSession?.user ||
+    !device ||
+    !shift ||
+    !offlineAccountingContextMatches(
+      context,
+      {
+        session: { user: authSession.user as any },
+        device,
+        shift,
+      },
+    )
+  ) {
+    throw new Error(
+      'Offline accounting authorization is missing, expired, or does not match the current cashier, terminal, and shift',
+    )
+  }
+  if (String(sale?.branch_id || '') !== device.branch_id) {
+    throw new Error('The sale branch does not match this enrolled terminal')
+  }
   if (!Array.isArray(sale?.items) || !sale.items.length) {
     throw new Error('Sale must contain at least one item')
   }
+
   const items = sale.items.map((item: any) => ({
     variant_id: String(item.variant_id || ''),
     qty: Number(item.qty),
@@ -324,11 +440,47 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
   )) {
     throw new Error('Sale contains an invalid or unsigned price snapshot')
   }
+
   const localTotal = Number(sale.local_total || 0)
-  if (!Number.isFinite(localTotal) || localTotal < 0) throw new Error('Sale total is invalid')
-  const { local_total, ...command } = sale
-  const now = new Date().toISOString()
+  const calculatedTotal = Math.round(
+    items.reduce(
+      (sum: number, item: any) =>
+        sum + (item.unit_price + item.unit_tax) * item.qty,
+      0,
+    ) * 100,
+  ) / 100
+  if (
+    !Number.isFinite(localTotal) ||
+    localTotal < 0 ||
+    Math.round(localTotal * 100) !== Math.round(calculatedTotal * 100)
+  ) {
+    throw new Error('Sale total does not match the immutable local price snapshots')
+  }
+  const paymentMethod = String(sale.payment_method || '')
+  if (!['cash', 'card', 'instapay', 'vodafone_cash', 'installment'].includes(paymentMethod)) {
+    throw new Error('Sale payment method is invalid')
+  }
+  const occurredAt = new Date().toISOString()
+  const terminalSequence = nextTerminalSequence(
+    getMeta('terminal_sale_sequence'),
+    context.server_last_sale_sequence,
+  )
   const invoiceNumber = String(sale.invoice_number || `LOCAL-${Date.now()}`)
+  const command = {
+    sync_id: syncId,
+    branch_id: device.branch_id,
+    shift_id: context.shift_id,
+    origin_cashier_id: context.user_id,
+    offline_session_id: context.session_id,
+    terminal_sequence: terminalSequence,
+    occurred_at: occurredAt,
+    offline_accounting_token: context.token,
+    customer_phone: sale.customer_phone || undefined,
+    items,
+    payment_method: paymentMethod,
+    language: sale.language === 'en' ? 'en' : 'ar',
+  }
+
   try {
     db.exec('BEGIN IMMEDIATE TRANSACTION')
     for (const item of items) {
@@ -341,23 +493,48 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
       }
     }
     run(
-      `INSERT INTO sales_local (sync_id,invoice_number,total,created_at,payment_method,customer_phone) VALUES (?,?,?,?,?,?)`,
+      `INSERT INTO sales_local (
+        sync_id,invoice_number,total,created_at,occurred_at,payment_method,
+        customer_phone,cashier_id,shift_id,offline_session_id,terminal_sequence
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       [
         syncId,
         invoiceNumber,
         localTotal,
-        now,
-        String(sale.payment_method || ''),
-        sale.customer_phone || null,
+        occurredAt,
+        occurredAt,
+        command.payment_method,
+        command.customer_phone || null,
+        context.user_id,
+        context.shift_id,
+        context.session_id,
+        terminalSequence,
       ],
     )
     run(
-      `INSERT INTO outbox (id,type,payload,sync_status,created_at,updated_at) VALUES (?,?,?,?,?,?)`,
-      [syncId, 'sale', JSON.stringify({ ...command, sync_id: syncId }), 'pending', now, now],
+      `INSERT INTO outbox (
+        id,type,payload,sync_status,created_at,terminal_sequence,updated_at
+      ) VALUES (?,?,?,?,?,?,?)`,
+      [
+        syncId,
+        'sale',
+        JSON.stringify(command),
+        'pending',
+        occurredAt,
+        terminalSequence,
+        occurredAt,
+      ],
     )
+    setMeta('terminal_sale_sequence', terminalSequence)
     db.exec('COMMIT')
     saveDb()
-    return { sync_id: syncId, invoice_number: invoiceNumber, ok: true }
+    return {
+      sync_id: syncId,
+      invoice_number: invoiceNumber,
+      terminal_sequence: terminalSequence,
+      occurred_at: occurredAt,
+      ok: true,
+    }
   } catch (error) {
     try { db.exec('ROLLBACK') } catch {}
     throw error
@@ -365,7 +542,15 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
 })
 
 ipcMain.handle('sync:get_outbox', () =>
-  q(`SELECT o.*,s.total AS local_total FROM outbox o LEFT JOIN sales_local s ON s.sync_id=o.id WHERE o.sync_status='pending' ORDER BY o.created_at`),
+  q(`SELECT o.*,s.total AS local_total
+     FROM outbox o
+     LEFT JOIN sales_local s ON s.sync_id=o.id
+     WHERE o.sync_status='pending'
+     ORDER BY
+       CASE WHEN o.terminal_sequence IS NULL THEN 0 ELSE 1 END,
+       LENGTH(COALESCE(o.terminal_sequence,'')),
+       o.terminal_sequence,
+       o.created_at`),
 )
 
 ipcMain.handle('sync:mark_sending', (_e, id: string) => {
@@ -393,6 +578,9 @@ ipcMain.handle('sync:mark_sent', (_e, result: {
   server_document_number?: string | null,
 }) => {
   const now = new Date().toISOString()
+  const terminalSequence = String(
+    get(`SELECT terminal_sequence FROM outbox WHERE id=?`, [result.id])?.terminal_sequence || '',
+  )
   try {
     db.exec('BEGIN IMMEDIATE TRANSACTION')
     run(
@@ -425,6 +613,7 @@ ipcMain.handle('sync:mark_sent', (_e, result: {
     )
     db.exec('COMMIT')
     saveDb()
+    if (terminalSequence) updateSecureAcknowledgedSequence(terminalSequence)
     return { ok: true }
   } catch (error) {
     try { db.exec('ROLLBACK') } catch {}
@@ -468,6 +657,7 @@ ipcMain.handle('sync:get_status', () => {
     pending_count: Number(
       get(`SELECT COUNT(*) AS count FROM outbox WHERE sync_status IN ('pending','sending','failed')`)?.count || 0,
     ),
+    terminal_sale_sequence: getMeta('terminal_sale_sequence') || '0',
     // Returning a null cursor makes the next normal sync request a full
     // snapshot. This also self-heals a partially corrupted local catalog.
     sync_cursor: catalogRefreshRequired
@@ -490,21 +680,68 @@ ipcMain.handle('sync:set_status', (_e, status: any) => {
 
 ipcMain.handle('secure:get', () => readSecureState())
 
-ipcMain.handle('secure:set_auth', (_e, auth: any) => {
+ipcMain.handle('secure:set_auth', (_e, auth: SecureState['auth'] | null) => {
   const state = readSecureState()
   if (auth) state.auth = auth
-  else delete state.auth
+  else {
+    delete state.auth
+    delete state.accounting
+  }
   writeSecureState(state)
   return { ok: true }
 })
 
 ipcMain.handle('secure:set_device', (_e, device: SecureState['device'] | null) => {
   const state = readSecureState()
-  if (device) state.device = device
-  else delete state.device
+  if (device) {
+    if (state.device?.terminal_id !== device.terminal_id) {
+      delete state.auth
+      delete state.accounting
+    }
+    state.device = device
+  } else {
+    delete state.device
+    delete state.auth
+    delete state.accounting
+  }
   writeSecureState(state)
   return { ok: true }
 })
+
+ipcMain.handle(
+  'secure:set_accounting',
+  (_e, context: OfflineAccountingContext | null) => {
+    const state = readSecureState()
+    if (!context) {
+      delete state.accounting
+      writeSecureState(state)
+      return { ok: true }
+    }
+    const user = state.auth?.session?.user
+    const device = state.device
+    if (
+      !user ||
+      !device ||
+      !offlineAccountingContextMatches(
+        context,
+        {
+          session: { user: user as any },
+          device,
+          shift: { id: context.shift_id, branch_id: context.branch_id },
+        },
+      )
+    ) {
+      throw new Error(
+        'Offline accounting context does not match the secure cashier and terminal state',
+      )
+    }
+    state.accounting = context
+    writeSecureState(state)
+    alignLocalSequence(context)
+    saveDb()
+    return { ok: true }
+  },
+)
 
 ipcMain.handle('sync:apply_pull', (_e, data: any) => {
   const products = Array.isArray(data?.products) ? data.products : []
@@ -618,7 +855,7 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') =
   <div class="center small">
     ملابس رجالي – Men's Clothing<br>
     ${isAr ? 'فاتورة' : 'Invoice'} ${escapeHtml(invoice.invoice_number || '')}<br>
-    ${new Date().toLocaleString(isAr ? 'ar-EG' : 'en-GB')}
+    ${new Date(invoice.occurred_at || Date.now()).toLocaleString(isAr ? 'ar-EG' : 'en-GB')}
   </div>
   <hr>
   <table>

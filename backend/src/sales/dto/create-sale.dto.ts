@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
+  IsDateString,
   IsIn,
   IsInt,
   IsNumber,
@@ -47,15 +48,38 @@ export class CreateSaleItemDto {
 }
 
 export class CreateSaleDto {
-  @IsOptional()
   @IsUUID()
-  sync_id?: string;
+  sync_id: string;
 
   @IsUUID()
   branch_id: string;
 
+  @IsUUID()
+  shift_id: string;
+
+  @IsUUID()
+  origin_cashier_id: string;
+
+  @IsUUID()
+  offline_session_id: string;
+
+  @IsString()
+  @Matches(/^[1-9]\d{0,18}$/, {
+    message: 'terminal_sequence must be a positive decimal integer',
+  })
+  terminal_sequence: string;
+
+  @IsDateString()
+  occurred_at: string;
+
+  @IsString()
+  @MaxLength(4096)
+  offline_accounting_token: string;
+
   @IsOptional()
-  @Matches(/^(?:\+20|0)1[0125]\d{8}$/, { message: 'customer_phone must be a valid Egyptian mobile number' })
+  @Matches(/^(?:\+20|0)1[0125]\d{8}$/, {
+    message: 'customer_phone must be a valid Egyptian mobile number',
+  })
   customer_phone?: string;
 
   @ValidateNested({ each: true })

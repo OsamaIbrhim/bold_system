@@ -6,8 +6,12 @@ import { randomUUID } from 'crypto';
 import { ApiExceptionFilter } from './common/api-error.filter';
 import compression from 'compression';
 import { apiJsonReplacer } from './common/json-serialization';
+import { validateRuntimeEnvironment } from './config/environment';
 
 async function bootstrap() {
+  // Validate every security-critical setting before Nest constructs providers or
+  // opens a database connection. Configuration errors must fail the deployment.
+  const environment = validateRuntimeEnvironment();
   const app = await NestFactory.create(AppModule);
   // Keep BigInt handling inside the HTTP adapter. Sync cursors are explicitly
   // strings, while this protects future database counters from causing a 500.
@@ -22,11 +26,7 @@ async function bootstrap() {
     next();
   });
   app.useGlobalFilters(new ApiExceptionFilter());
-  const allowedOrigins = (process.env.CORS_ORIGINS || 'null')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-  app.enableCors({ origin: allowedOrigins, credentials: true });
+  app.enableCors({ origin: environment.corsOrigins, credentials: true });
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
     forbidNonWhitelisted: true,
@@ -42,7 +42,7 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
 
-  await app.listen(process.env.PORT || 3000, '0.0.0.0');
-  console.log(`Bold API running on http://localhost:${process.env.PORT || 3000}`);
+  await app.listen(environment.port, '0.0.0.0');
+  console.log(`Bold API running on port ${environment.port}`);
 }
 bootstrap();

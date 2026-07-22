@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+
 @Injectable()
 export class ReportsService {
   constructor(private prisma: PrismaService) {}
@@ -10,8 +11,6 @@ export class ReportsService {
     if (Number.isNaN(start.getTime()) || Number.isNaN(endExclusive.getTime())) {
       throw new BadRequestException('Invalid report date range');
     }
-    // Date inputs represent inclusive business days. Query using a half-open
-    // interval so the selected final day is not truncated at midnight.
     if (/^\d{4}-\d{2}-\d{2}$/.test(to)) {
       endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
     } else {
@@ -21,27 +20,60 @@ export class ReportsService {
   }
 
   async sales(from: string, to: string, branch_id?: string) {
-    const where:any = { status: 'completed', created_at: this.dateRange(from, to) };
+    const where: any = {
+      status: 'completed',
+      occurred_at: this.dateRange(from, to),
+    };
     if (branch_id) where.branch_id = branch_id;
-    const invoices = await this.prisma.salesInvoice.findMany({ where, include: { items: true }});
-    const returnWhere:any = { status: 'completed', created_at: this.dateRange(from, to) };
+    const invoices = await this.prisma.salesInvoice.findMany({
+      where,
+      include: { items: true },
+    });
+    const returnWhere: any = {
+      status: 'completed',
+      created_at: this.dateRange(from, to),
+    };
     if (branch_id) returnWhere.branch_id = branch_id;
-    const returns = await this.prisma.return.findMany({ where: returnWhere, include: { items: true } });
+    const returns = await this.prisma.return.findMany({
+      where: returnWhere,
+      include: { items: true },
+    });
 
-    const grossSales = invoices.reduce((sum, invoice) => sum + Number(invoice.total), 0);
-    const netRevenueBeforeRefunds = invoices.reduce((sum, invoice) => sum + Number(invoice.subtotal), 0);
-    const taxCollected = invoices.reduce((sum, invoice) => sum + Number(invoice.tax_amount), 0);
-    const soldCost = invoices.flatMap((invoice) => invoice.items)
+    const grossSales = invoices.reduce(
+      (sum, invoice) => sum + Number(invoice.total),
+      0,
+    );
+    const netRevenueBeforeRefunds = invoices.reduce(
+      (sum, invoice) => sum + Number(invoice.subtotal),
+      0,
+    );
+    const taxCollected = invoices.reduce(
+      (sum, invoice) => sum + Number(invoice.tax_amount),
+      0,
+    );
+    const soldCost = invoices
+      .flatMap((invoice) => invoice.items)
       .reduce((sum, item) => sum + Number(item.unit_cost) * item.qty, 0);
-    const refundTotal = returns.reduce((sum, record) => sum + Number(record.refund_total), 0);
-    const refundSubtotal = returns.reduce((sum, record) => sum + Number(record.refund_subtotal), 0);
-    const refundTax = returns.reduce((sum, record) => sum + Number(record.refund_tax), 0);
-    const returnedCost = returns.flatMap((record) => record.items)
+    const refundTotal = returns.reduce(
+      (sum, record) => sum + Number(record.refund_total),
+      0,
+    );
+    const refundSubtotal = returns.reduce(
+      (sum, record) => sum + Number(record.refund_subtotal),
+      0,
+    );
+    const refundTax = returns.reduce(
+      (sum, record) => sum + Number(record.refund_tax),
+      0,
+    );
+    const returnedCost = returns
+      .flatMap((record) => record.items)
       .reduce((sum, item) => sum + Number(item.unit_cost) * item.qty, 0);
 
     const totalSales = Math.round((grossSales - refundTotal) * 100) / 100;
     const totalCost = Math.round((soldCost - returnedCost) * 100) / 100;
-    const netRevenue = Math.round((netRevenueBeforeRefunds - refundSubtotal) * 100) / 100;
+    const netRevenue =
+      Math.round((netRevenueBeforeRefunds - refundSubtotal) * 100) / 100;
     const totalTax = Math.round((taxCollected - refundTax) * 100) / 100;
     const profit = Math.round((netRevenue - totalCost) * 100) / 100;
     return {
@@ -58,6 +90,7 @@ export class ReportsService {
       returns,
     };
   }
+
   async bestSellers(branch_id?: string, limit = 20) {
     const items = await this.prisma.salesInvoiceItem.findMany({
       where: {
@@ -66,9 +99,8 @@ export class ReportsService {
           ...(branch_id ? { branch_id } : {}),
         },
       },
-      include: { 
-        variant: { include: { product: true }}
-      }});
+      include: { variant: { include: { product: true } } },
+    });
     const returnedItems = await this.prisma.returnItem.findMany({
       where: {
         return_record: {
@@ -78,32 +110,57 @@ export class ReportsService {
       },
       include: { variant: { include: { product: true } } },
     });
-    const map = new Map<string, {qty:number, name:string, profit:number}>();
-    for (const it of items) {
-      const key = it.variant_id;
-      const prev = map.get(key) || { qty:0, name: it.variant?.product?.name_en || key, profit:0 };
-      const profit = (Number(it.unit_price) - Number(it.unit_cost)) * it.qty;
-      map.set(key, { qty: prev.qty + it.qty, name: prev.name, profit: prev.profit + profit });
+    const map = new Map<
+      string,
+      { qty: number; name: string; profit: number }
+    >();
+    for (const item of items) {
+      const key = item.variant_id;
+      const previous = map.get(key) || {
+        qty: 0,
+        name: item.variant?.product?.name_en || key,
+        profit: 0,
+      };
+      const profit =
+        (Number(item.unit_price) - Number(item.unit_cost)) * item.qty;
+      map.set(key, {
+        qty: previous.qty + item.qty,
+        name: previous.name,
+        profit: previous.profit + profit,
+      });
     }
-    for (const it of returnedItems) {
-      const key = it.variant_id;
-      const prev = map.get(key) || { qty:0, name: it.variant?.product?.name_en || key, profit:0 };
-      const profit = (Number(it.unit_price) - Number(it.unit_cost)) * it.qty;
-      map.set(key, { qty: prev.qty - it.qty, name: prev.name, profit: prev.profit - profit });
+    for (const item of returnedItems) {
+      const key = item.variant_id;
+      const previous = map.get(key) || {
+        qty: 0,
+        name: item.variant?.product?.name_en || key,
+        profit: 0,
+      };
+      const profit =
+        (Number(item.unit_price) - Number(item.unit_cost)) * item.qty;
+      map.set(key, {
+        qty: previous.qty - item.qty,
+        name: previous.name,
+        profit: previous.profit - profit,
+      });
     }
-    return [...map.entries()].map(([variant_id, v])=>({ variant_id, ...v }))
+    return [...map.entries()]
+      .map(([variant_id, value]) => ({ variant_id, ...value }))
       .filter((item) => item.qty > 0)
-      .sort((a,b)=>b.qty-a.qty).slice(0, limit);
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, limit);
   }
+
   async profitByItem(from: string, to: string, branch_id?: string) {
-    // Profit per product variant
     const invoices = await this.prisma.salesInvoice.findMany({
-      where: { 
+      where: {
         status: 'completed',
-        created_at: this.dateRange(from, to),
-        ...(branch_id ? { branch_id } : {})
+        occurred_at: this.dateRange(from, to),
+        ...(branch_id ? { branch_id } : {}),
       },
-      include: { items: { include: { variant: { include: { product: true }}}}}
+      include: {
+        items: { include: { variant: { include: { product: true } } } },
+      },
     });
     const returnedItems = await this.prisma.returnItem.findMany({
       where: {
@@ -116,58 +173,83 @@ export class ReportsService {
       include: { variant: { include: { product: true } } },
     });
     const map = new Map();
-    for (const inv of invoices) {
-      for (const it of inv.items) {
-        const key = it.variant_id;
-        const name = it.variant?.product?.name_en + ' ' + [it.variant?.size, it.variant?.color].filter(Boolean).join('/');
-        const revenue = Number(it.unit_price) * it.qty;
-        const cost = Number(it.unit_cost) * it.qty;
-        const prev = map.get(key) || { variant_id: key, name, qty:0, revenue:0, cost:0, profit:0 };
+    for (const invoice of invoices) {
+      for (const item of invoice.items) {
+        const key = item.variant_id;
+        const name =
+          item.variant?.product?.name_en +
+          ' ' +
+          [item.variant?.size, item.variant?.color].filter(Boolean).join('/');
+        const revenue = Number(item.unit_price) * item.qty;
+        const cost = Number(item.unit_cost) * item.qty;
+        const previous = map.get(key) || {
+          variant_id: key,
+          name,
+          qty: 0,
+          revenue: 0,
+          cost: 0,
+          profit: 0,
+        };
         map.set(key, {
-          variant_id: key, name,
-          qty: prev.qty + it.qty,
-          revenue: prev.revenue + revenue,
-          cost: prev.cost + cost,
-          profit: prev.profit + revenue - cost
+          variant_id: key,
+          name,
+          qty: previous.qty + item.qty,
+          revenue: previous.revenue + revenue,
+          cost: previous.cost + cost,
+          profit: previous.profit + revenue - cost,
         });
       }
     }
-    for (const it of returnedItems) {
-      const key = it.variant_id;
-      const name = it.variant?.product?.name_en + ' ' + [it.variant?.size, it.variant?.color].filter(Boolean).join('/');
-      const revenue = Number(it.unit_price) * it.qty;
-      const cost = Number(it.unit_cost) * it.qty;
-      const prev = map.get(key) || { variant_id: key, name, qty:0, revenue:0, cost:0, profit:0 };
+    for (const item of returnedItems) {
+      const key = item.variant_id;
+      const name =
+        item.variant?.product?.name_en +
+        ' ' +
+        [item.variant?.size, item.variant?.color].filter(Boolean).join('/');
+      const revenue = Number(item.unit_price) * item.qty;
+      const cost = Number(item.unit_cost) * item.qty;
+      const previous = map.get(key) || {
+        variant_id: key,
+        name,
+        qty: 0,
+        revenue: 0,
+        cost: 0,
+        profit: 0,
+      };
       map.set(key, {
-        variant_id: key, name,
-        qty: prev.qty - it.qty,
-        revenue: prev.revenue - revenue,
-        cost: prev.cost - cost,
-        profit: prev.profit - revenue + cost,
+        variant_id: key,
+        name,
+        qty: previous.qty - item.qty,
+        revenue: previous.revenue - revenue,
+        cost: previous.cost - cost,
+        profit: previous.profit - revenue + cost,
       });
     }
-    return Array.from(map.values()).sort((a,b)=>b.profit-a.profit);
+    return Array.from(map.values()).sort((a, b) => b.profit - a.profit);
   }
+
   async inventoryValuation(branch_id?: string) {
     const stock = await this.prisma.inventoryStock.findMany({
-      where: branch_id ? { branch_id, qty_on_hand: { gt: 0 }} : { qty_on_hand: { gt: 0 }},
-      include: { 
-        variant: { include: { product: true }},
-        branch: true
-      }
+      where: branch_id
+        ? { branch_id, qty_on_hand: { gt: 0 } }
+        : { qty_on_hand: { gt: 0 } },
+      include: {
+        variant: { include: { product: true } },
+        branch: true,
+      },
     });
-    const rows = stock.map(s => ({
-      branch: s.branch.name_ar,
-      sku: s.variant.sku,
-      product: s.variant.product.name_en,
-      size: s.variant.size,
-      color: s.variant.color,
-      qty: s.qty_on_hand,
-      cost_price: Number(s.variant.cost_price),
-      value: s.qty_on_hand * Number(s.variant.cost_price)
+    const rows = stock.map((record) => ({
+      branch: record.branch.name_ar,
+      sku: record.variant.sku,
+      product: record.variant.product.name_en,
+      size: record.variant.size,
+      color: record.variant.color,
+      qty: record.qty_on_hand,
+      cost_price: Number(record.variant.cost_price),
+      value: record.qty_on_hand * Number(record.variant.cost_price),
     }));
-    const total_value = rows.reduce((sum,r)=> sum + r.value, 0);
-    const total_qty = rows.reduce((sum,r)=> sum + r.qty, 0);
+    const total_value = rows.reduce((sum, row) => sum + row.value, 0);
+    const total_qty = rows.reduce((sum, row) => sum + row.qty, 0);
     return { total_qty, total_value, rows };
   }
 }

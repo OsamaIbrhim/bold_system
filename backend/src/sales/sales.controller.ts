@@ -72,7 +72,7 @@ export class SalesController {
     return this.svc.createSale(
       dto,
       req.user,
-      terminal.id,
+      terminal,
     )
   }
 
@@ -131,7 +131,10 @@ export class SalesController {
     @Res() res: Response,
   ) {
     const invoice = await this.svc.getInvoice(id, req.user)
-    const buf = await this.pdfService.render(invoice, lang)
+    const buf = await this.pdfService.render(
+      { ...invoice, created_at: invoice.occurred_at },
+      lang,
+    )
 
     res.set({
       'Content-Disposition':

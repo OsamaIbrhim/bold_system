@@ -1,4 +1,4 @@
-import { Product, SyncState } from './types'
+import { OfflineAccountingContext, Product, SyncState } from './types'
 
 export type LocalSale = {
   sync_id: string
@@ -9,6 +9,11 @@ export type LocalSale = {
   synced_at?: string | null
   total: number
   created_at: string
+  occurred_at?: string
+  shift_id?: string | null
+  cashier_id?: string | null
+  offline_session_id?: string | null
+  terminal_sequence?: string | null
   sync_status: string
   payment_method?: string
   customer_phone?: string | null
@@ -23,6 +28,9 @@ export type BoldBridge = {
 
   sale(payload: unknown): Promise<{
     sync_id: string
+    invoice_number: string
+    terminal_sequence: string
+    occurred_at: string
     ok: boolean
     replayed?: boolean
   }>
@@ -59,6 +67,9 @@ export type BoldBridge = {
   secure_get(): Promise<any>
   secure_set_auth(auth: unknown): Promise<{ ok: boolean }>
   secure_set_device(device: unknown): Promise<{ ok: boolean }>
+  secure_set_accounting(
+    context: OfflineAccountingContext | null,
+  ): Promise<{ ok: boolean }>
 }
 
 function resolveBridge(): BoldBridge {

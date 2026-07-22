@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   terminalCredentialDisposition,
   validAuth,
+  validOfflineAccountingContext,
   validDevice,
 } from './api'
 
@@ -25,6 +26,44 @@ describe('POS secure startup state', () => {
           user: { id: 'u', branch_id: 'undefined' },
         },
       }),
+    ).toBe(false)
+  })
+
+
+  it('rejects expired or malformed offline accounting authorization', () => {
+    const context = {
+      v: 1,
+      purpose: 'pos-offline-accounting',
+      key_id: 'offline-2026',
+      token: 'offline-2026.payload.signature',
+      session_id: 'session-1',
+      user_id: 'user-1',
+      role: 'cashier',
+      branch_id: 'branch-1',
+      terminal_id: 'terminal-1',
+      shift_id: 'shift-1',
+      issued_at: '2026-07-22T09:00:00.000Z',
+      expires_at: '2026-07-22T11:00:00.000Z',
+      server_last_sale_sequence: '7',
+    }
+
+    expect(
+      validOfflineAccountingContext(
+        context,
+        Date.parse('2026-07-22T10:00:00.000Z'),
+      ),
+    ).toBe(true)
+    expect(
+      validOfflineAccountingContext(
+        context,
+        Date.parse('2026-07-22T11:00:00.000Z'),
+      ),
+    ).toBe(false)
+    expect(
+      validOfflineAccountingContext(
+        { ...context, server_last_sale_sequence: '1.5' },
+        Date.parse('2026-07-22T10:00:00.000Z'),
+      ),
     ).toBe(false)
   })
 

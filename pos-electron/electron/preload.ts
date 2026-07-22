@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('bold', {
   secure_get: () => ipcRenderer.invoke('secure:get'),
   secure_set_auth: (auth: any) => ipcRenderer.invoke('secure:set_auth', auth),
   secure_set_device: (device: any) => ipcRenderer.invoke('secure:set_device', device),
+  secure_set_accounting: (context: any) =>
+    ipcRenderer.invoke('secure:set_accounting', context),
 })
 
 declare global {

@@ -1,4 +1,6 @@
-export const SIGNED_CATALOG_FORMAT_VERSION = 'signed-price-v1'
+// Bump this value whenever the server-side price-token contract changes in a
+// way that requires every terminal to replace its cached catalog atomically.
+export const SIGNED_CATALOG_FORMAT_VERSION = 'signed-price-kid-v2'
 
 export type SignedCatalogProduct = {
   id?: unknown
@@ -11,6 +13,16 @@ export type SignedCatalogProduct = {
 
 function nonEmptyString(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+export function signedPriceTokenKeyId(value: unknown) {
+  if (!nonEmptyString(value)) return null
+  const parts = String(value).split('.')
+  if (parts.length !== 3) return null
+  const keyId = parts[0]
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$/.test(keyId)
+    ? keyId
+    : null
 }
 
 export function isValidSignedCatalogProduct(
@@ -26,8 +38,9 @@ export function isValidSignedCatalogProduct(
     Number.isFinite(tax) &&
     tax >= 0 &&
     nonEmptyString(product.price_version) &&
-    nonEmptyString(product.price_token) &&
-    nonEmptyString(product.price_issued_at)
+    !!signedPriceTokenKeyId(product.price_token) &&
+    nonEmptyString(product.price_issued_at) &&
+    Number.isFinite(new Date(String(product.price_issued_at)).getTime())
   )
 }
 

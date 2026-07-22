@@ -493,7 +493,7 @@ export function SalesScreen({
                       </td>
 
                       <td>
-                        {new Date(sale.created_at).toLocaleString('ar-EG')}
+                        {new Date(sale.occurred_at || sale.created_at).toLocaleString('ar-EG')}
                       </td>
 
                       <td>{sale.customer_phone || 'بدون عميل'}</td>
@@ -561,7 +561,7 @@ export function SalesScreen({
                       </td>
 
                       <td>
-                        {new Date(invoice.created_at).toLocaleString(
+                        {new Date(invoice.occurred_at || invoice.created_at).toLocaleString(
                           'ar-EG',
                         )}
                       </td>
@@ -872,6 +872,7 @@ function InvoiceModal({
     const result = await bold.print(
       {
         invoice_number: invoice.invoice_number,
+        occurred_at: invoice.occurred_at || invoice.created_at,
         payment_method: invoice.payment_method,
         total: Number(invoice.total),
         items,
@@ -908,7 +909,7 @@ function InvoiceModal({
             <div>
               <span>التاريخ</span>
               <b>
-                {new Date(invoice.created_at).toLocaleString(
+                {new Date(invoice.occurred_at || invoice.created_at).toLocaleString(
                   'ar-EG',
                 )}
               </b>
