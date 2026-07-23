@@ -957,7 +957,7 @@ export class PurchasingService {
         const [
           downstreamCostMovement,
           downstreamStockMovement,
-          currentQty,
+          currentGlobalQty,
           currentVariant,
         ] = await Promise.all([
           tx.inventoryCostMovement.findFirst({
@@ -974,10 +974,27 @@ export class PurchasingService {
             },
             select: { id: true },
           }),
-          tx.inventoryStock.aggregate({
-            where: { variant_id: item.variant_id },
-            _sum: { qty_on_hand: true },
-          }),
+          tx.$queryRaw<Array<{ quantity: bigint }>>`
+            SELECT (
+              COALESCE((
+                SELECT SUM(stock."qty_on_hand")
+                FROM "InventoryStock" stock
+                WHERE stock."variant_id" = ${item.variant_id}::uuid
+              ), 0)
+              +
+              COALESCE((
+                SELECT SUM(
+                  transfer_item."shipped_qty" -
+                  transfer_item."received_qty" -
+                  transfer_item."damaged_qty" -
+                  transfer_item."missing_qty"
+                )
+                FROM "TransferItem" transfer_item
+                WHERE transfer_item."variant_id" =
+                  ${item.variant_id}::uuid
+              ), 0)
+            )::bigint AS quantity
+          `,
           tx.productVariant.findUnique({
             where: { id: item.variant_id },
             select: { cost_price: true },
@@ -987,7 +1004,7 @@ export class PurchasingService {
         if (
           downstreamCostMovement ||
           downstreamStockMovement ||
-          Number(currentQty._sum.qty_on_hand || 0) !==
+          Number(currentGlobalQty[0]?.quantity || 0n) !==
             receiptCostMovement.global_quantity_after ||
           !currentVariant ||
           !new Prisma.Decimal(currentVariant.cost_price).equals(
@@ -1158,12 +1175,33 @@ export class PurchasingService {
           movement."variant_id",
           movement."sequence" DESC
       ),
-      stock AS (
+      on_hand AS (
         SELECT
           record."variant_id",
           COALESCE(SUM(record."qty_on_hand"), 0)::bigint AS "qty"
         FROM "InventoryStock" record
         GROUP BY record."variant_id"
+      ),
+      in_transit AS (
+        SELECT
+          item."variant_id",
+          COALESCE(SUM(
+            item."shipped_qty" - item."received_qty" -
+            item."damaged_qty" - item."missing_qty"
+          ), 0)::bigint AS "qty"
+        FROM "TransferItem" item
+        GROUP BY item."variant_id"
+      ),
+      stock AS (
+        SELECT
+          COALESCE(on_hand."variant_id", in_transit."variant_id") AS "variant_id",
+          (
+            COALESCE(on_hand."qty", 0) +
+            COALESCE(in_transit."qty", 0)
+          )::bigint AS "qty"
+        FROM on_hand
+        FULL OUTER JOIN in_transit
+          ON in_transit."variant_id" = on_hand."variant_id"
       )
       SELECT
         variant."id" AS "variant_id",

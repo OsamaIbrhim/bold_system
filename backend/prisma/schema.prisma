@@ -49,6 +49,9 @@ model User {
   created_transfers         Transfer[]          @relation("TransferCreatedBy")
   shipped_transfers         Transfer[]          @relation("TransferShippedBy")
   received_transfers        Transfer[]          @relation("TransferReceivedBy")
+  cancelled_transfers       Transfer[]          @relation("TransferCancelledBy")
+  transfer_commands         TransferCommand[]   @relation("TransferCommandCreatedBy")
+  transfer_transit_movements TransferTransitMovement[] @relation("TransferTransitMovementCreatedBy")
   opened_shifts             Shift[]             @relation("ShiftOpenedBy")
   closed_shifts             Shift[]             @relation("ShiftClosedBy")
   reviewed_offers           OfferSuggestion[]   @relation("OfferReviewedBy")
@@ -142,6 +145,7 @@ model ProductVariant {
   purchase_items        PurchaseInvoiceItem[]
   supplier_return_items SupplierReturnItem[]
   transfer_items        TransferItem[]
+  transfer_transit_movements TransferTransitMovement[]
   return_items          ReturnItem[]
   offer_suggestions     OfferSuggestion[]
 
@@ -578,42 +582,113 @@ model SupplierReturnItem {
 }
 
 model Transfer {
-  id              String         @id @default(uuid()) @db.Uuid
-  from_branch_id  String         @db.Uuid
-  from_branch     Branch         @relation("TransferFromBranch", fields: [from_branch_id], references: [id], onDelete: Restrict)
-  to_branch_id    String         @db.Uuid
-  to_branch       Branch         @relation("TransferToBranch", fields: [to_branch_id], references: [id], onDelete: Restrict)
-  status          TransferStatus @default(pending)
-  transfer_number String         @unique
-  created_by      String?        @db.Uuid
-  creator         User?          @relation("TransferCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
-  shipped_by      String?        @db.Uuid
-  shipper         User?          @relation("TransferShippedBy", fields: [shipped_by], references: [id], onDelete: SetNull)
-  shipped_at      DateTime?
-  received_by     String?        @db.Uuid
-  receiver        User?          @relation("TransferReceivedBy", fields: [received_by], references: [id], onDelete: SetNull)
-  received_at     DateTime?
-  created_at      DateTime       @default(now())
-  items           TransferItem[]
+  id                  String         @id @default(uuid()) @db.Uuid
+  from_branch_id      String         @db.Uuid
+  from_branch         Branch         @relation("TransferFromBranch", fields: [from_branch_id], references: [id], onDelete: Restrict)
+  to_branch_id        String         @db.Uuid
+  to_branch           Branch         @relation("TransferToBranch", fields: [to_branch_id], references: [id], onDelete: Restrict)
+  status              TransferStatus @default(pending)
+  transfer_number     String         @unique
+  idempotency_key     String?        @db.VarChar(191)
+  command_fingerprint String?        @db.VarChar(64)
+  created_by          String?        @db.Uuid
+  creator             User?          @relation("TransferCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
+  shipped_by          String?        @db.Uuid
+  shipper             User?          @relation("TransferShippedBy", fields: [shipped_by], references: [id], onDelete: SetNull)
+  shipped_at          DateTime?
+  received_by         String?        @db.Uuid
+  receiver            User?          @relation("TransferReceivedBy", fields: [received_by], references: [id], onDelete: SetNull)
+  received_at         DateTime?
+  cancelled_by        String?        @db.Uuid
+  canceller           User?          @relation("TransferCancelledBy", fields: [cancelled_by], references: [id], onDelete: SetNull)
+  cancelled_at        DateTime?
+  cancellation_reason String?        @db.VarChar(500)
+  created_at          DateTime       @default(now())
+  updated_at          DateTime       @default(now())
+  items               TransferItem[]
+  commands            TransferCommand[]
+  transit_movements   TransferTransitMovement[]
 
   @@index([from_branch_id, created_at])
   @@index([to_branch_id, created_at])
+  @@index([status, updated_at], map: "Transfer_status_updated_at_idx")
 }
 
 enum TransferStatus {
   pending
   shipped
+  partially_received
   received
   cancelled
 }
 
 model TransferItem {
-  id          String         @id @default(uuid()) @db.Uuid
-  transfer_id String         @db.Uuid
-  transfer    Transfer       @relation(fields: [transfer_id], references: [id], onDelete: Cascade)
-  variant_id  String         @db.Uuid
-  variant     ProductVariant @relation(fields: [variant_id], references: [id])
-  qty         Int
+  id            String         @id @default(uuid()) @db.Uuid
+  transfer_id   String         @db.Uuid
+  transfer      Transfer       @relation(fields: [transfer_id], references: [id], onDelete: Cascade)
+  variant_id    String         @db.Uuid
+  variant       ProductVariant @relation(fields: [variant_id], references: [id])
+  qty           Int
+  shipped_qty   Int            @default(0)
+  received_qty  Int            @default(0)
+  damaged_qty   Int            @default(0)
+  missing_qty   Int            @default(0)
+  transit_movements TransferTransitMovement[]
+
+  @@unique([transfer_id, variant_id], map: "TransferItem_transfer_id_variant_id_key")
+}
+
+enum TransferCommandType {
+  ship
+  receive
+  cancel
+}
+
+model TransferCommand {
+  id                  String              @id @db.Uuid
+  transfer_id         String              @db.Uuid
+  transfer            Transfer            @relation(fields: [transfer_id], references: [id], onDelete: Restrict)
+  command_type        TransferCommandType
+  idempotency_key     String              @unique @db.VarChar(191)
+  command_fingerprint String              @db.VarChar(64)
+  result_status       String              @db.VarChar(32)
+  created_by          String?             @db.Uuid
+  creator             User?               @relation("TransferCommandCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
+  created_at          DateTime            @default(now())
+
+  @@index([transfer_id, created_at])
+}
+
+enum TransferTransitMovementType {
+  shipped
+  received
+  damaged
+  missing
+  correction
+}
+
+model TransferTransitMovement {
+  id                String                      @id @default(uuid()) @db.Uuid
+  sequence          BigInt                      @unique @default(autoincrement())
+  transfer_id       String                      @db.Uuid
+  transfer          Transfer                    @relation(fields: [transfer_id], references: [id], onDelete: Restrict)
+  transfer_item_id  String                      @db.Uuid
+  transfer_item     TransferItem                @relation(fields: [transfer_item_id], references: [id], onDelete: Restrict)
+  variant_id        String                      @db.Uuid
+  variant           ProductVariant              @relation(fields: [variant_id], references: [id], onDelete: Restrict)
+  movement_type     TransferTransitMovementType
+  quantity_delta    Int
+  in_transit_after  Int
+  idempotency_key   String                      @unique @db.VarChar(191)
+  occurred_at       DateTime
+  recorded_at       DateTime                    @default(now())
+  created_by        String?                     @db.Uuid
+  creator           User?                       @relation("TransferTransitMovementCreatedBy", fields: [created_by], references: [id], onDelete: SetNull)
+  metadata          Json?
+
+  @@index([transfer_id, sequence], map: "TransferTransitMovement_transfer_sequence_idx")
+  @@index([transfer_item_id, sequence], map: "TransferTransitMovement_item_sequence_idx")
+  @@index([variant_id, sequence], map: "TransferTransitMovement_variant_sequence_idx")
 }
 
 model OfferSuggestion {

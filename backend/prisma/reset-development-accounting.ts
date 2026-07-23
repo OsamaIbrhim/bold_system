@@ -25,13 +25,24 @@ async function main() {
         true
       )
     `;
+    await tx.$queryRaw`
+      SELECT set_config(
+        'bold.transfer_maintenance',
+        'on',
+        true
+      )
+    `;
 
+    await tx.transferTransitMovement.deleteMany();
+    await tx.transferCommand.deleteMany();
     await tx.inventoryCostMovement.deleteMany();
     await tx.inventoryMovement.deleteMany();
     await tx.supplierReturnItem.deleteMany();
     await tx.supplierReturn.deleteMany();
     await tx.purchaseInvoiceItem.deleteMany();
     await tx.purchaseInvoice.deleteMany();
+    await tx.transferItem.deleteMany();
+    await tx.transfer.deleteMany();
   });
 }
 

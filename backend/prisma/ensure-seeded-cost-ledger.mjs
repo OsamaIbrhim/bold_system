@@ -49,11 +49,32 @@ export async function ensureSeededCostLedger(
       )
     FROM "ProductVariant" variant
     JOIN (
+      WITH on_hand AS (
+        SELECT
+          stock."variant_id",
+          SUM(stock."qty_on_hand")::bigint AS "qty"
+        FROM "InventoryStock" stock
+        GROUP BY stock."variant_id"
+      ),
+      in_transit AS (
+        SELECT
+          item."variant_id",
+          SUM(
+            item."shipped_qty" - item."received_qty" -
+            item."damaged_qty" - item."missing_qty"
+          )::bigint AS "qty"
+        FROM "TransferItem" item
+        GROUP BY item."variant_id"
+      )
       SELECT
-        stock."variant_id",
-        SUM(stock."qty_on_hand")::bigint AS "qty_on_hand"
-      FROM "InventoryStock" stock
-      GROUP BY stock."variant_id"
+        COALESCE(on_hand."variant_id", in_transit."variant_id") AS "variant_id",
+        (
+          COALESCE(on_hand."qty", 0) +
+          COALESCE(in_transit."qty", 0)
+        )::bigint AS "qty_on_hand"
+      FROM on_hand
+      FULL OUTER JOIN in_transit
+        ON in_transit."variant_id" = on_hand."variant_id"
     ) totals
       ON totals."variant_id" = variant."id"
     WHERE totals."qty_on_hand" > 0
@@ -76,12 +97,33 @@ export async function ensureSeededCostLedger(
         movement."variant_id",
         movement."sequence" DESC
     ),
-    stock AS (
+    on_hand AS (
       SELECT
         record."variant_id",
         SUM(record."qty_on_hand")::bigint AS "qty"
       FROM "InventoryStock" record
       GROUP BY record."variant_id"
+    ),
+    in_transit AS (
+      SELECT
+        item."variant_id",
+        SUM(
+          item."shipped_qty" - item."received_qty" -
+          item."damaged_qty" - item."missing_qty"
+        )::bigint AS "qty"
+      FROM "TransferItem" item
+      GROUP BY item."variant_id"
+    ),
+    stock AS (
+      SELECT
+        COALESCE(on_hand."variant_id", in_transit."variant_id") AS "variant_id",
+        (
+          COALESCE(on_hand."qty", 0) +
+          COALESCE(in_transit."qty", 0)
+        )::bigint AS "qty"
+      FROM on_hand
+      FULL OUTER JOIN in_transit
+        ON in_transit."variant_id" = on_hand."variant_id"
     )
     SELECT COUNT(*)::integer AS "mismatch_count"
     FROM "ProductVariant" variant
