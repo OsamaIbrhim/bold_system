@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../api'
 import { bold } from '../electron'
-import { CartItem, Customer, DeviceCredential, OfflineAccountingContext, Product, Session, Shift, SyncState } from '../types'
+import { CartItem, Customer, DeviceCredential, HeldSale, OfflineAccountingContext, Product, Session, Shift, SyncState } from '../types'
 import { offlineAccountingSummaryMatches } from '../../electron/offline-accounting'
 import { ConfirmDialog, FieldError, Modal, NumericKeypad } from '../components/ui'
-import { cartTotals, isValidEgyptianPhone, money, normalizeEgyptianPhone, paymentLabel, readHeldSales, removeHeldSale, saveHeldSale } from '../utils'
+import { cartTotals, isValidEgyptianPhone, money, normalizeEgyptianPhone, paymentLabel } from '../utils'
 
 const paymentMethods = ['cash','card','instapay','vodafone_cash','installment'] as const
 
@@ -35,6 +35,8 @@ export function RegisterScreen({
   const [customerOpen,setCustomerOpen]=useState(false)
   const [checkoutOpen,setCheckoutOpen]=useState(false)
   const [heldOpen,setHeldOpen]=useState(false)
+  const [heldSales,setHeldSales]=useState<HeldSale[]>([])
+  const [heldLoading,setHeldLoading]=useState(false)
   const [confirmClear,setConfirmClear]=useState(false)
   const [completed,setCompleted]=useState<any>(null)
   const searchRef=useRef<HTMLInputElement | null>(null)
@@ -43,6 +45,21 @@ export function RegisterScreen({
     accountingContext,
     {session,device,shift},
   )
+
+  const loadHeldSales=useCallback(async()=>{
+    if(!accountingReady){setHeldSales([]);return}
+    setHeldLoading(true)
+    try{setHeldSales(await bold.held_sales())}
+    catch(error){notify((error as Error).message,'error')}
+    finally{setHeldLoading(false)}
+  },[accountingReady,notify])
+
+  useEffect(()=>{
+    // Older builds stored unscoped drafts in renderer localStorage. They
+    // cannot be trusted or attributed to the current cashier/shift.
+    localStorage.removeItem('bold_pos_held_sales_v1')
+    void loadHeldSales()
+  },[loadHeldSales])
 
   const runSearch=async(value=query)=>{
     const term=value.trim(); if(!term)return
@@ -108,10 +125,41 @@ export function RegisterScreen({
     }))
   }
 
-  const holdSale=()=>{
+  const holdSale=async()=>{
     if(!cart.length){notify('السلة فارغة','info');return}
-    saveHeldSale({items:cart,customer})
-    setCart([]);setCustomer(null);notify('تم تعليق الفاتورة ويمكن استكمالها لاحقًا','success')
+    if(!accountingReady){notify('لا يمكن تعليق الفاتورة قبل تجهيز هوية الكاشير والوردية على هذا الجهاز.','error');return}
+    try{
+      await bold.hold_sale({
+        items:cart.map((item)=>({variant_id:item.variant_id,qty:item.qty})),
+        customer,
+      })
+      setCart([]);setCustomer(null)
+      await loadHeldSales()
+      notify('تم تعليق الفاتورة داخل وردية هذا الكاشير','success')
+    }catch(error){notify((error as Error).message,'error')}
+  }
+
+  const resumeHeldSale=async(sale:HeldSale)=>{
+    if(cart.length){notify('أكمل أو علّق الفاتورة الحالية قبل استعادة مسودة أخرى.','error');return}
+    try{
+      const resumed=await bold.resume_held_sale(sale.id)
+      setCart(resumed.items)
+      setCustomer(resumed.customer)
+      setHeldOpen(false)
+      await loadHeldSales()
+      notify('تمت استعادة الفاتورة بأسعار ومخزون الكتالوج الحالي.','success')
+    }catch(error){
+      notify((error as Error).message,'error')
+      await loadHeldSales()
+    }
+  }
+
+  const deleteHeldSale=async(sale:HeldSale)=>{
+    try{
+      await bold.delete_held_sale(sale.id)
+      await loadHeldSales()
+      notify('تم حذف الفاتورة المعلقة.','success')
+    }catch(error){notify((error as Error).message,'error')}
   }
 
   const openCheckout=()=>{
@@ -135,7 +183,7 @@ export function RegisterScreen({
     const handler=(event:KeyboardEvent)=>{
       if(event.key==='F2'){event.preventDefault();searchRef.current?.focus()}
       if(event.key==='F3'){event.preventDefault();setCustomerOpen(true)}
-      if(event.key==='F4'){event.preventDefault();holdSale()}
+      if(event.key==='F4'){event.preventDefault();void holdSale()}
       if(event.key==='F8'){event.preventDefault();onSync()}
       if(event.key==='F10'){event.preventDefault();openCheckout()}
     }
@@ -152,7 +200,7 @@ export function RegisterScreen({
     <main className="register-layout">
       <section className="catalog-panel">
         <div className="search-bar"><input ref={searchRef} value={query} onChange={(event)=>setQuery(event.target.value)} onKeyDown={(event)=>{if(event.key==='Enter')runSearch()}} placeholder="امسح الباركود أو ابحث بالـ SKU…" autoFocus/><button className="button primary" onClick={()=>runSearch()} disabled={searching}>{searching?'بحث…':'بحث'}</button></div>
-        <div className="quick-actions"><button onClick={()=>setCustomerOpen(true)}>F3 · العميل <b>{customer?.name||customer?.phone||'بدون عميل'}</b></button><button onClick={holdSale}>F4 · تعليق الفاتورة</button><button onClick={()=>setHeldOpen(true)}>الفواتير المعلقة <b>{readHeldSales().length}</b></button></div>
+        <div className="quick-actions"><button onClick={()=>setCustomerOpen(true)}>F3 · العميل <b>{customer?.name||customer?.phone||'بدون عميل'}</b></button><button onClick={()=>void holdSale()}>F4 · تعليق الفاتورة</button><button onClick={()=>{setHeldOpen(true);void loadHeldSales()}}>الفواتير المعلقة <b>{heldSales.length}</b></button></div>
         <div className="product-results">
           {results.map((product)=><button className="product-card" key={product.id} onClick={()=>addProduct(product)}><div><b>{displayName(product)}</b><span>{product.sku}</span></div><div className="variant-meta"><span>{product.color||'—'}</span><span>{product.size||'—'}</span></div><strong>{money(product.selling_price)} ج</strong></button>)}
           {!results.length&&<div className="catalog-empty"><div>⌁</div><h2>جاهز للمسح</h2><p>امسح باركود الصنف أو اكتب SKU ثم اضغط Enter.</p><span>F2 للعودة السريعة إلى البحث</span></div>}
@@ -171,7 +219,7 @@ export function RegisterScreen({
 
     <CustomerModal open={customerOpen} value={customer} onSelect={(value)=>{setCustomer(value);setCustomerOpen(false)}} onClose={()=>setCustomerOpen(false)} notify={notify}/>
     <CheckoutModal open={checkoutOpen} items={cart} customer={customer} session={session} device={device} shift={shift} accountingContext={accountingContext} branchId={device.branch_id} catalogValidUntil={syncState.catalog_valid_until} totals={totals} onSaleSaved={onSync} onClose={()=>setCheckoutOpen(false)} onCompleted={(value)=>{setCheckoutOpen(false);setCart([]);setCustomer(null);setCompleted(value)}} notify={notify}/>
-    <HeldSalesModal open={heldOpen} onClose={()=>setHeldOpen(false)} onResume={(sale)=>{setCart(sale.items);setCustomer(sale.customer);removeHeldSale(sale.id);setHeldOpen(false)}}/>
+    <HeldSalesModal open={heldOpen} sales={heldSales} loading={heldLoading} onClose={()=>setHeldOpen(false)} onResume={(sale)=>void resumeHeldSale(sale)} onDelete={(sale)=>void deleteHeldSale(sale)}/>
     <SaleSuccessModal value={completed} onClose={()=>{setCompleted(null);searchRef.current?.focus()}}/>
     <ConfirmDialog open={confirmClear} title="تفريغ السلة؟" message="سيتم حذف جميع الأصناف من الفاتورة الحالية." confirmLabel="تفريغ السلة" danger onClose={()=>setConfirmClear(false)} onConfirm={()=>{setCart([]);setConfirmClear(false)}}/>
   </div>
@@ -219,9 +267,8 @@ function CheckoutModal({open,items,customer,session,device,shift,accountingConte
   return <Modal open={open} title="إتمام الدفع" onClose={()=>{if(!busy)onClose()}} width="920px"><div className="checkout-layout"><section><div className="checkout-total"><span>المبلغ المطلوب</span><b>{money(totals.total)} ج</b><small>{totals.quantity} قطعة · ضريبة {money(totals.tax)} ج</small></div><div className="payment-methods">{paymentMethods.map((value)=><button key={value} className={method===value?'active':''} onClick={()=>setMethod(value)}>{paymentLabel(value)}</button>)}</div>{method==='cash'&&<><label>المبلغ المستلم</label><div className="money-input"><input dir="ltr" inputMode="decimal" value={received} onChange={(event)=>setReceived(event.target.value)} autoFocus/><span>ج.م</span></div><div className="cash-presets"><button onClick={()=>setReceived(String(totals.total))}>المبلغ بالضبط</button>{[50,100,200,500,1000].filter((value)=>value>=totals.total).slice(0,4).map((value)=><button key={value} onClick={()=>setReceived(String(value))}>{value}</button>)}</div><div className="change-row"><span>الباقي للعميل</span><b>{money(change)} ج</b></div></>}<FieldError>{error}</FieldError></section>{method==='cash'&&<NumericKeypad value={received} onChange={setReceived}/>}</div><div className="dialog-actions"><button className="button secondary" disabled={busy} onClick={onClose}>رجوع</button><button className="button primary xl" disabled={busy} onClick={confirm}>{busy?'جارٍ حفظ البيع…':`تأكيد ${paymentLabel(method)}`}</button></div></Modal>
 }
 
-function HeldSalesModal({open,onClose,onResume}:{open:boolean,onClose:()=>void,onResume:(sale:any)=>void}){
-  const sales=open?readHeldSales():[]
-  return <Modal open={open} title="الفواتير المعلقة" onClose={onClose} width="720px"><div className="held-list">{sales.map((sale)=><article key={sale.id}><div><b>{sale.customer?.name||sale.customer?.phone||'بدون عميل'}</b><span>{new Date(sale.created_at).toLocaleString('ar-EG')}</span></div><div><b>{sale.items.reduce((sum:number,item:CartItem)=>sum+item.qty,0)} قطعة</b><span>{money(cartTotals(sale.items).total)} ج</span></div><button className="button primary" onClick={()=>onResume(sale)}>استكمال</button><button className="icon-button" onClick={()=>{removeHeldSale(sale.id);location.reload()}}>×</button></article>)}{!sales.length&&<div className="empty-state"><b>لا توجد فواتير معلقة</b><span>استخدم F4 لتعليق الفاتورة الحالية.</span></div>}</div></Modal>
+function HeldSalesModal({open,sales,loading,onClose,onResume,onDelete}:{open:boolean,sales:HeldSale[],loading:boolean,onClose:()=>void,onResume:(sale:HeldSale)=>void,onDelete:(sale:HeldSale)=>void}){
+  return <Modal open={open} title="الفواتير المعلقة لهذه الوردية" onClose={onClose} width="760px"><div className="held-list">{loading&&<div className="empty-state"><b>جارٍ فحص المسودات…</b></div>}{!loading&&sales.map((sale)=><article key={sale.id}><div><b>{sale.customer?.name||sale.customer?.phone||'بدون عميل'}</b><span>{new Date(sale.created_at).toLocaleString('ar-EG')}</span>{sale.resume_error&&<small className="danger-text">{sale.resume_error}</small>}</div><div><b>{sale.item_count} قطعة</b><span>{sale.resume_error?'تحتاج مراجعة':`${money(sale.total)} ج`}</span></div><button className="button primary" disabled={!!sale.resume_error} onClick={()=>onResume(sale)}>استكمال</button><button className="icon-button" aria-label="حذف الفاتورة المعلقة" onClick={()=>onDelete(sale)}>×</button></article>)}{!loading&&!sales.length&&<div className="empty-state"><b>لا توجد فواتير معلقة</b><span>استخدم F4 لتعليق الفاتورة الحالية داخل نفس الوردية.</span></div>}</div></Modal>
 }
 
 function SaleSuccessModal({value,onClose}:{value:any,onClose:()=>void}){

@@ -1,4 +1,10 @@
-import { OfflineAccountingContext, Product, SyncState } from './types'
+import {
+  Customer,
+  HeldSale,
+  OfflineAccountingContext,
+  Product,
+  SyncState,
+} from './types'
 
 export type LocalSale = {
   sync_id: string
@@ -45,6 +51,16 @@ export type BoldBridge = {
   }>
 
   local_sales(): Promise<LocalSale[]>
+  held_sales(): Promise<HeldSale[]>
+  hold_sale(payload: {
+    items: Array<{
+      variant_id: string
+      qty: number
+    }>
+    customer: Customer | null
+  }): Promise<HeldSale>
+  resume_held_sale(id: string): Promise<HeldSale>
+  delete_held_sale(id: string): Promise<{ ok: boolean }>
 
   sync_get_outbox(): Promise<any[]>
   sync_mark_sending(id: string): Promise<{ ok: boolean }>

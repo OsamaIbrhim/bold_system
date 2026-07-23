@@ -7,6 +7,13 @@ contextBridge.exposeInMainWorld('bold', {
   print: (invoice: any, lang: 'ar' | 'en') =>
     ipcRenderer.invoke('pos:print', invoice, lang),
   local_sales: () => ipcRenderer.invoke('pos:list_local_sales'),
+  held_sales: () => ipcRenderer.invoke('pos:list_held_sales'),
+  hold_sale: (payload: any) =>
+    ipcRenderer.invoke('pos:hold_sale', payload),
+  resume_held_sale: (id: string) =>
+    ipcRenderer.invoke('pos:resume_held_sale', id),
+  delete_held_sale: (id: string) =>
+    ipcRenderer.invoke('pos:delete_held_sale', id),
   sync_get_outbox: () => ipcRenderer.invoke('sync:get_outbox'),
   sync_mark_sending: (id: string) =>
     ipcRenderer.invoke('sync:mark_sending', id),

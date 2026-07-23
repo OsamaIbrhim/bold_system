@@ -10,6 +10,9 @@ for API/database setup, deployment, recovery, and security guidance.
 - Pending sales upload before a new product/price/stock snapshot is accepted.
 - Automatic synchronization runs at login, every 15 seconds, and after network
   reconnection; operators can also select **Sync now**.
+- Multi-page change pulls must reach a strictly advancing final cursor before
+  catalog validity is restored. A partial, stalled, or excessive pull keeps
+  checkout blocked instead of exposing a half-applied catalog.
 - The header shows real API online/offline state, last successful sync, pending
   sale count, and the last error.
 - A manager-issued, one-use code enrolls the stable device ID. The resulting
@@ -29,6 +32,10 @@ for API/database setup, deployment, recovery, and security guidance.
   password itself is never stored.
 - Printing uses a main-process-owned window lifecycle. Print cancellation is
   reported separately and cannot undo or duplicate a saved sale.
+- Held sales are stored in the durable SQLite database, scoped to the current
+  branch, cashier, and shift. Resuming a draft rebuilds every line from the
+  current signed price catalog and available stock; open drafts block shift
+  closure until they are completed or deleted.
 
 ## Run
 

@@ -137,12 +137,15 @@ export type SyncState = {
 
 export type AppView = 'register' | 'sales'
 
-export type SaleDraft = {
+export type HeldSale = {
   id: string
   customer: Customer | null
   items: CartItem[]
+  item_count: number
+  total: number
   created_at: string
   updated_at: string
+  resume_error?: string | null
 }
 
 export type ReturnRecord = {

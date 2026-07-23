@@ -29,6 +29,12 @@ import {
   OfflineLoginVerifier,
   verifyOfflineLogin,
 } from './offline-login'
+import {
+  HeldSaleScope,
+  parseHeldSaleItems,
+  sanitizeHeldSaleCustomer,
+  validateHeldSaleItems,
+} from './held-sale'
 // @ts-ignore
 import initSqlJs from 'sql.js'
 
@@ -489,6 +495,170 @@ function getMeta(key: string) {
   return String(get(`SELECT value FROM sync_meta WHERE key=?`, [key])?.value || '')
 }
 
+function currentHeldSaleScope(): HeldSaleScope {
+  const state = readSecureState()
+  const user = state.auth?.session?.user
+  const device = state.device
+  const context = state.accounting
+  if (
+    !user ||
+    !device ||
+    !context ||
+    context.user_id !== user.id ||
+    context.branch_id !== user.branch_id ||
+    context.branch_id !== device.branch_id ||
+    context.terminal_id !== device.terminal_id ||
+    !context.shift_id
+  ) {
+    throw new Error(
+      'لا يمكن الوصول إلى الفواتير المعلقة قبل تسجيل الكاشير وتجهيز الوردية على هذا الجهاز.',
+    )
+  }
+  return {
+    branch_id: context.branch_id,
+    cashier_id: context.user_id,
+    shift_id: context.shift_id,
+  }
+}
+
+function parseHeldCustomer(value: unknown) {
+  if (!value) return null
+  try {
+    return sanitizeHeldSaleCustomer(
+      JSON.parse(String(value)),
+    )
+  } catch {
+    throw new Error(
+      'بيانات عميل الفاتورة المعلقة تالفة. احذف المسودة وأعد إنشاءها.',
+    )
+  }
+}
+
+function hydrateHeldSale(row: any) {
+  const storedItems = parseHeldSaleItems(
+    row.items_json,
+  )
+  const items = storedItems.map((stored) => {
+    const product = get(
+      `SELECT p.*,COALESCE(s.qty,0) AS available_qty
+       FROM products p
+       LEFT JOIN stock s ON s.variant_id=p.id
+       WHERE p.id=?`,
+      [stored.variant_id],
+    )
+    const available = Number(
+      product?.available_qty,
+    )
+    const price = Number(
+      product?.selling_price,
+    )
+    const tax = Number(product?.unit_tax)
+    if (
+      !product ||
+      !isValidSignedCatalogProduct(product) ||
+      !Number.isInteger(available) ||
+      available < stored.qty ||
+      price <= 0
+    ) {
+      throw new Error(
+        `الصنف ${stored.variant_id} تغير أو لم تعد كميته كافية. احذف المسودة أو أعد بناءها من الكتالوج الحالي.`,
+      )
+    }
+    return {
+      ...product,
+      id: String(product.id),
+      variant_id: String(product.id),
+      name:
+        String(
+          product.name_ar ||
+          product.name_en ||
+          product.sku ||
+          product.id,
+        ),
+      qty: stored.qty,
+      unit_price: price,
+      unit_tax: tax,
+      available_qty: available,
+    }
+  })
+  const totalCents = items.reduce(
+    (sum, item) =>
+      sum +
+      (
+        Math.round(item.unit_price * 100) +
+        Math.round(item.unit_tax * 100)
+      ) * item.qty,
+    0,
+  )
+  return {
+    id: String(row.id),
+    customer: parseHeldCustomer(
+      row.customer_json,
+    ),
+    items,
+    item_count: items.reduce(
+      (sum, item) => sum + item.qty,
+      0,
+    ),
+    total: totalCents / 100,
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    resume_error: null,
+  }
+}
+
+function summarizeHeldSale(row: any) {
+  try {
+    return hydrateHeldSale(row)
+  } catch (error) {
+    let itemCount = 0
+    try {
+      itemCount = parseHeldSaleItems(
+        row.items_json,
+      ).reduce(
+        (sum, item) => sum + item.qty,
+        0,
+      )
+    } catch {}
+    let customer = null
+    try {
+      customer = parseHeldCustomer(
+        row.customer_json,
+      )
+    } catch {}
+    return {
+      id: String(row.id),
+      customer,
+      items: [],
+      item_count: itemCount,
+      total: 0,
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+      resume_error:
+        error instanceof Error
+          ? error.message
+          : 'تعذر استعادة الفاتورة المعلقة.',
+    }
+  }
+}
+
+function heldSaleRows(scope: HeldSaleScope) {
+  return q(
+    `SELECT *
+     FROM held_sales
+     WHERE branch_id=?
+       AND cashier_id=?
+       AND shift_id=?
+     ORDER BY created_at DESC
+     LIMIT 50`,
+    [
+      scope.branch_id,
+      scope.cashier_id,
+      scope.shift_id,
+    ],
+  )
+}
+
 function hasUnsignedCatalogProducts() {
   return !!get(
     `SELECT 1 AS found
@@ -573,6 +743,23 @@ async function initDb() {
       server_invoice_number TEXT,
       synced_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS held_sales (
+      id TEXT PRIMARY KEY,
+      branch_id TEXT NOT NULL,
+      cashier_id TEXT NOT NULL,
+      shift_id TEXT NOT NULL,
+      customer_json TEXT,
+      items_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS held_sales_scope_created_idx
+      ON held_sales (
+        branch_id,
+        cashier_id,
+        shift_id,
+        created_at DESC
+      );
     CREATE TABLE IF NOT EXISTS sync_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -1045,6 +1232,155 @@ ipcMain.handle('pos:list_local_sales', () =>
      ORDER BY COALESCE(s.occurred_at,s.created_at) DESC
      LIMIT 100`,
   ),
+)
+
+ipcMain.handle('pos:list_held_sales', () => {
+  const scope = currentHeldSaleScope()
+  return heldSaleRows(scope).map(
+    summarizeHeldSale,
+  )
+})
+
+ipcMain.handle('pos:hold_sale', (_event, input: any) => {
+  const scope = currentHeldSaleScope()
+  const items = validateHeldSaleItems(
+    input?.items,
+  )
+  const customer =
+    sanitizeHeldSaleCustomer(
+      input?.customer,
+    )
+  const now = new Date().toISOString()
+  const row = {
+    id: randomUUID(),
+    ...scope,
+    customer_json: customer
+      ? JSON.stringify(customer)
+      : null,
+    items_json: JSON.stringify(items),
+    created_at: now,
+    updated_at: now,
+  }
+
+  // Hydration ignores renderer-supplied prices and reads the current signed
+  // catalog and stock before accepting the draft.
+  const hydrated = hydrateHeldSale(row)
+  return persistedMutation(() => {
+    run(
+      `INSERT INTO held_sales (
+        id,branch_id,cashier_id,shift_id,
+        customer_json,items_json,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?)`,
+      [
+        row.id,
+        row.branch_id,
+        row.cashier_id,
+        row.shift_id,
+        row.customer_json,
+        row.items_json,
+        row.created_at,
+        row.updated_at,
+      ],
+    )
+    const stale = q(
+      `SELECT id
+       FROM held_sales
+       WHERE branch_id=?
+         AND cashier_id=?
+         AND shift_id=?
+       ORDER BY created_at DESC
+       LIMIT -1 OFFSET 50`,
+      [
+        scope.branch_id,
+        scope.cashier_id,
+        scope.shift_id,
+      ],
+    )
+    for (const draft of stale) {
+      run(
+        `DELETE FROM held_sales
+         WHERE id=?
+           AND branch_id=?
+           AND cashier_id=?
+           AND shift_id=?`,
+        [
+          draft.id,
+          scope.branch_id,
+          scope.cashier_id,
+          scope.shift_id,
+        ],
+      )
+    }
+    return hydrated
+  })
+})
+
+ipcMain.handle(
+  'pos:resume_held_sale',
+  (_event, id: string) => {
+    const scope = currentHeldSaleScope()
+    const row = get(
+      `SELECT *
+       FROM held_sales
+       WHERE id=?
+         AND branch_id=?
+         AND cashier_id=?
+         AND shift_id=?`,
+      [
+        String(id || ''),
+        scope.branch_id,
+        scope.cashier_id,
+        scope.shift_id,
+      ],
+    )
+    if (!row) {
+      throw new Error(
+        'الفاتورة المعلقة غير موجودة في وردية هذا الكاشير.',
+      )
+    }
+    const hydrated = hydrateHeldSale(row)
+    return persistedMutation(() => {
+      run(
+        `DELETE FROM held_sales
+         WHERE id=?
+           AND branch_id=?
+           AND cashier_id=?
+           AND shift_id=?`,
+        [
+          row.id,
+          scope.branch_id,
+          scope.cashier_id,
+          scope.shift_id,
+        ],
+      )
+      return hydrated
+    })
+  },
+)
+
+ipcMain.handle(
+  'pos:delete_held_sale',
+  (_event, id: string) => {
+    const scope = currentHeldSaleScope()
+    return persistedMutation(() => {
+      run(
+        `DELETE FROM held_sales
+         WHERE id=?
+           AND branch_id=?
+           AND cashier_id=?
+           AND shift_id=?`,
+        [
+          String(id || ''),
+          scope.branch_id,
+          scope.cashier_id,
+          scope.shift_id,
+        ],
+      )
+      return {
+        ok: db.getRowsModified() === 1,
+      }
+    })
+  },
 )
 
 ipcMain.handle('pos:sale', (_e, sale: any) => {
