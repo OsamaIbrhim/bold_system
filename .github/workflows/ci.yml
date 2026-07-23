@@ -78,6 +78,21 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      - name: Create isolated migration databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for database in \
+            bold_migrations_clean \
+            bold_migrations_clean_shadow \
+            bold_migrations_upgrade \
+            bold_migrations_upgrade_shadow
+          do
+            createdb \
+              --host localhost \
+              --username postgres \
+              "$database"
+          done
       - name: Resolve exact migration baselines
         id: refs
         env:
@@ -96,9 +111,9 @@ jobs:
           --github-output "$GITHUB_OUTPUT"
       - name: Apply current migrations to a clean database twice
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean_shadow
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean_shadow
         run: |
           npx prisma generate
           npx prisma migrate deploy
@@ -115,8 +130,8 @@ jobs:
       - name: Build a populated database from the release baseline
         working-directory: migration-base/backend
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
         run: |
           npm ci
           npx prisma generate
@@ -124,9 +139,9 @@ jobs:
           npm run prisma:seed
       - name: Upgrade populated release data with current migrations
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade_shadow
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade_shadow
         run: |
           npx prisma generate
           npx prisma migrate deploy
