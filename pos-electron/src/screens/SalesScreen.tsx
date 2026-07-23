@@ -16,7 +16,13 @@ import {
   SyncState,
 } from '../types'
 import { FieldError, Modal } from '../components/ui'
-import { money, paymentLabel } from '../utils'
+import {
+  fromCents,
+  lineCents,
+  money,
+  paymentLabel,
+  toCents,
+} from '../utils'
 import { OPERATIONS_PAGE_SIZE, pageWindow } from '../operations'
 
 type OperationsTab = 'sales' | 'returns'
@@ -864,9 +870,10 @@ function InvoiceModal({
       name: itemName(item),
       sku: item.variant?.sku,
       qty: item.qty,
-      unit_price:
-        Number(item.unit_price) +
-        Number(item.unit_tax || 0),
+      unit_price: fromCents(
+        toCents(item.unit_price) +
+        toCents(item.unit_tax || 0),
+      ),
     }))
 
     const result = await bold.print(
@@ -954,9 +961,10 @@ function InvoiceModal({
                   0,
                   item.qty - returned,
                 )
-                const grossUnit =
-                  Number(item.unit_price) +
-                  Number(item.unit_tax || 0)
+                const grossUnit = fromCents(
+                  toCents(item.unit_price) +
+                  toCents(item.unit_tax || 0),
+                )
 
                 return (
                   <tr key={item.id}>
@@ -967,7 +975,7 @@ function InvoiceModal({
                       <b>{remaining}</b>
                     </td>
                     <td>{money(grossUnit)}</td>
-                    <td>{money(grossUnit * item.qty)}</td>
+                    <td>{money(fromCents(lineCents(grossUnit, item.qty)))}</td>
                   </tr>
                 )
               })}
@@ -1085,14 +1093,19 @@ function ReturnModal({
     (item) => Number(quantities[item.id] || 0) > 0,
   )
 
-  const refund = selectedItems.reduce(
+  const refundCents = selectedItems.reduce(
     (sum, item) =>
       sum +
-      (Number(item.unit_price) +
-        Number(item.unit_tax || 0)) *
+      lineCents(
+        fromCents(
+          toCents(item.unit_price) +
+          toCents(item.unit_tax || 0),
+        ),
         Number(quantities[item.id]),
+      ),
     0,
   )
+  const refund = fromCents(refundCents)
 
   const submit = async () => {
     if (busy || !invoice) return
@@ -1291,11 +1304,13 @@ function ReturnModal({
 
                     <td>
                       {money(
-                        (Number(item.unit_price) +
-                          Number(item.unit_tax || 0)) *
-                          Number(
-                            quantities[item.id] || 0,
+                        fromCents(lineCents(
+                          fromCents(
+                            toCents(item.unit_price) +
+                            toCents(item.unit_tax || 0),
                           ),
+                          Number(quantities[item.id] || 0),
+                        )),
                       )}{' '}
                       ج
                     </td>

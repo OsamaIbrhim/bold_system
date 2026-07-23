@@ -4,7 +4,7 @@ import { bold } from '../electron'
 import { CartItem, Customer, DeviceCredential, HeldSale, OfflineAccountingContext, Product, Session, Shift, SyncState } from '../types'
 import { offlineAccountingSummaryMatches } from '../../electron/offline-accounting'
 import { ConfirmDialog, FieldError, Modal, NumericKeypad } from '../components/ui'
-import { cartTotals, isValidEgyptianPhone, money, normalizeEgyptianPhone, paymentLabel } from '../utils'
+import { cartTotals, fromCents, isValidEgyptianPhone, lineCents, money, normalizeEgyptianPhone, paymentLabel, toCents } from '../utils'
 
 const paymentMethods = ['cash','card','instapay','vodafone_cash','installment'] as const
 
@@ -210,7 +210,7 @@ export function RegisterScreen({
       <aside className="cart-panel">
         <div className="cart-heading"><div><span className="eyebrow">الفاتورة الحالية</span><h2>{totals.quantity} قطعة</h2></div>{cart.length>0&&<button className="text-button danger-text" onClick={()=>setConfirmClear(true)}>تفريغ</button>}</div>
         <div className="cart-items">
-          {cart.map((item)=><article className="cart-item" key={item.variant_id}><div className="cart-item-main"><b>{item.name}</b><span>{item.sku} · {item.color||'بدون لون'} · {item.size||'بدون مقاس'}</span><small>متاح {item.available_qty}</small></div><div className="qty-control"><button onClick={()=>changeQty(item.variant_id,item.qty-1)}>−</button><input value={item.qty} inputMode="numeric" onChange={(event)=>changeQty(item.variant_id,Number(event.target.value||0))}/><button onClick={()=>changeQty(item.variant_id,item.qty+1)}>+</button></div><div className="line-price"><b>{money(item.unit_price*item.qty)} ج</b><span>{money(item.unit_price)} × {item.qty}</span></div><button className="remove-item" onClick={()=>changeQty(item.variant_id,0)}>×</button></article>)}
+          {cart.map((item)=><article className="cart-item" key={item.variant_id}><div className="cart-item-main"><b>{item.name}</b><span>{item.sku} · {item.color||'بدون لون'} · {item.size||'بدون مقاس'}</span><small>متاح {item.available_qty}</small></div><div className="qty-control"><button onClick={()=>changeQty(item.variant_id,item.qty-1)}>−</button><input value={item.qty} inputMode="numeric" onChange={(event)=>changeQty(item.variant_id,Number(event.target.value||0))}/><button onClick={()=>changeQty(item.variant_id,item.qty+1)}>+</button></div><div className="line-price"><b>{money(fromCents(lineCents(item.unit_price,item.qty)))} ج</b><span>{money(item.unit_price)} × {item.qty}</span></div><button className="remove-item" onClick={()=>changeQty(item.variant_id,0)}>×</button></article>)}
           {!cart.length&&<div className="cart-empty"><div>🛍</div><b>السلة فارغة</b><span>أضف أول صنف لبدء الفاتورة.</span></div>}
         </div>
         <div className="cart-summary"><div><span>المجموع الفرعي</span><b>{money(totals.subtotal)} ج</b></div><div><span>الضريبة</span><b>{money(totals.tax)} ج</b></div><div className="grand-total"><span>الإجمالي</span><b>{money(totals.total)} ج</b></div>{!accountingReady&&<FieldError>الدفع متوقف حتى يتم إصدار تفويض محاسبي صالح للكاشير والجهاز والوردية.</FieldError>}{!catalogIsFresh(syncState.catalog_valid_until)&&<FieldError>كتالوج الأسعار يحتاج مزامنة قبل الدفع.</FieldError>}<button className="checkout-button" disabled={!cart.length||!accountingReady} onClick={openCheckout}><span>F10 · الدفع</span><b>{money(totals.total)} ج</b></button></div>
@@ -244,13 +244,16 @@ function CheckoutModal({open,items,customer,session,device,shift,accountingConte
   const [error,setError]=useState('')
   const paymentLock=useRef(false)
   useEffect(()=>{if(open){paymentLock.current=false;setMethod('cash');setReceived('');setBusy(false);setError('')}},[open])
-  const receivedValue=Number(received||0),change=Math.max(0,receivedValue-totals.total)
+  let receivedCents=0
+  try { receivedCents=toCents(received||0) } catch { receivedCents=0 }
+  const receivedValue=fromCents(receivedCents)
+  const change=fromCents(Math.max(0,receivedCents-toCents(totals.total)))
   const confirm=async()=>{
     if(paymentLock.current||busy)return
     if(!offlineAccountingSummaryMatches(accountingContext,{session,device,shift})){setError('انتهى أو تغير تفويض الكاشير والوردية. أغلق شاشة الدفع وشغّل الإنترنت لتجديده.');return}
     if(!catalogIsFresh(catalogValidUntil)){setError('انتهت صلاحية كتالوج الأسعار. أغلق شاشة الدفع ونفّذ مزامنة.');return}
     if(items.some((item)=>!hasSignedPrice(item))){setError('تحتوي الفاتورة على سعر غير موقع. أعد إضافة الصنف بعد المزامنة.');return}
-    if(method==='cash'&&receivedValue<totals.total){setError('المبلغ المستلم أقل من إجمالي الفاتورة.');return}
+    if(method==='cash'&&receivedCents<toCents(totals.total)){setError('المبلغ المستلم أقل من إجمالي الفاتورة.');return}
     const phone=customer?.phone?normalizeEgyptianPhone(customer.phone):''
     if(phone&&!isValidEgyptianPhone(phone)){setError('رقم العميل غير صحيح. صححه أو أزل العميل من الفاتورة.');return}
     paymentLock.current=true;setBusy(true);setError('')

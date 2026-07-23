@@ -1,20 +1,23 @@
 import { CartItem } from './types'
+import {
+  formatMoney,
+  fromCents,
+  lineCents,
+  toCents,
+} from '../electron/money'
 
-export const toCents = (value: number) =>
-  Math.round((Number.isFinite(value) ? value : 0) * 100)
-
-export const fromCents = (value: number) => value / 100
+export { fromCents, lineCents, toCents }
 
 export const money = (value: number | string | null | undefined) =>
-  Number(value || 0).toFixed(2)
+  formatMoney(value ?? 0)
 
 export function cartTotals(items: CartItem[]) {
   const subtotalCents = items.reduce(
-    (sum, item) => sum + toCents(item.unit_price) * item.qty,
+    (sum, item) => sum + lineCents(item.unit_price, item.qty),
     0,
   )
   const taxCents = items.reduce(
-    (sum, item) => sum + toCents(item.unit_tax) * item.qty,
+    (sum, item) => sum + lineCents(item.unit_tax, item.qty),
     0,
   )
   return {

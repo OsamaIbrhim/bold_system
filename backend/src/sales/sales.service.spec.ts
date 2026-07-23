@@ -295,11 +295,13 @@ describe('SalesService', () => {
           terminal_sequence: 1n,
           occurred_at: new Date(occurredAt),
           received_at: expect.any(Date),
-          total: 342,
         }),
       }),
     );
-    expect(result.total).toBe(342);
+    expect(
+      tx.salesInvoice.create.mock.calls[0][0].data.total.toFixed(2),
+    ).toBe('342.00');
+    expect(String(result.total)).toBe('342');
   });
 
   it('keeps the original cashier when another cashier uploads the offline command later', async () => {
@@ -326,13 +328,14 @@ describe('SalesService', () => {
     const { service, tx } = setupSale({ closedShift: true });
     await service.createSale(saleDto(), actor, terminal);
 
-    expect(tx.shift.update).toHaveBeenCalledWith({
-      where: { id: shiftId },
-      data: {
-        expected_cash: { increment: 342 },
-        difference: { decrement: 342 },
-      },
-    });
+    const reconciliation = tx.shift.update.mock.calls[0][0];
+    expect(reconciliation.where).toEqual({ id: shiftId });
+    expect(reconciliation.data.expected_cash.increment.toFixed(2)).toBe(
+      '342.00',
+    );
+    expect(reconciliation.data.difference.decrement.toFixed(2)).toBe(
+      '342.00',
+    );
     expect(tx.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -504,11 +507,13 @@ describe('SalesService', () => {
           branch_id: actor.branch_id,
           shift_id: shiftId,
           created_by: actor.sub,
-          refund_total: 342,
         }),
       }),
     );
-    expect(result.refund_total).toBe(342);
+    expect(
+      tx.return.create.mock.calls[0][0].data.refund_total.toFixed(2),
+    ).toBe('342.00');
+    expect(String(result.refund_total)).toBe('342');
   });
 
   it('returns safe snapshots and remaining quantities for return lookup', async () => {

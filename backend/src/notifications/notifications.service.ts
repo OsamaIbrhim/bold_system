@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import axios from 'axios';
+import { moneyString } from '../common/money';
 
 @Injectable()
 export class NotificationsService {
@@ -66,13 +67,16 @@ export class NotificationsService {
   }
 
   async sendReport(report: any, channels: string[]) {
-    const summary = `تقرير Bold\nالمبيعات: ${Number(report.total_sales||0).toFixed(2)} ج\nالتكلفة: ${Number(report.total_cost||0).toFixed(2)} ج\nالربح: ${Number(report.profit||0).toFixed(2)} ج\nالفواتير: ${report.count||0}`;
+    const totalSales = moneyString(report.total_sales || 0);
+    const totalCost = moneyString(report.total_cost || 0);
+    const profit = moneyString(report.total_profit || report.profit || 0);
+    const summary = `تقرير Bold\nالمبيعات: ${totalSales} ج\nالتكلفة: ${totalCost} ج\nالربح: ${profit} ج\nالفواتير: ${report.count||0}`;
     const html = `
       <div dir="rtl" style="font-family:Cairo,Arial,sans-serif">
       <h2>تقرير Bold اليومي</h2>
-      <p>المبيعات: <b>${Number(report.total_sales||0).toFixed(2)} ج</b></p>
-      <p>التكلفة: ${Number(report.total_cost||0).toFixed(2)} ج</p>
-      <p>الربح: <b>${Number(report.total_profit||report.profit||0).toFixed(2)} ج</b></p>
+      <p>المبيعات: <b>${totalSales} ج</b></p>
+      <p>التكلفة: ${totalCost} ج</p>
+      <p>الربح: <b>${profit} ج</b></p>
       <p>عدد الفواتير: ${report.count||0}</p>
       <hr><small>Bold POS – ${new Date().toLocaleString('ar-EG')}</small>
       </div>`;

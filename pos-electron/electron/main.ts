@@ -35,6 +35,13 @@ import {
   sanitizeHeldSaleCustomer,
   validateHeldSaleItems,
 } from './held-sale'
+import {
+  formatMoney,
+  fromCents,
+  lineCents,
+  sameMoney,
+  toCents,
+} from './money'
 // @ts-ignore
 import initSqlJs from 'sql.js'
 
@@ -584,10 +591,8 @@ function hydrateHeldSale(row: any) {
   const totalCents = items.reduce(
     (sum, item) =>
       sum +
-      (
-        Math.round(item.unit_price * 100) +
-        Math.round(item.unit_tax * 100)
-      ) * item.qty,
+      lineCents(item.unit_price, item.qty) +
+      lineCents(item.unit_tax, item.qty),
     0,
   )
   return {
@@ -600,7 +605,7 @@ function hydrateHeldSale(row: any) {
       (sum, item) => sum + item.qty,
       0,
     ),
-    total: totalCents / 100,
+    total: fromCents(totalCents),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     resume_error: null,
@@ -1436,17 +1441,16 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
     )
   }
 
-  const calculatedTotal = Math.round(
-    items.reduce(
-      (sum: number, item: any) =>
-        sum + (item.unit_price + item.unit_tax) * item.qty,
-      0,
-    ) * 100,
-  ) / 100
+  const calculatedTotalCents = items.reduce(
+    (sum: number, item: any) =>
+      sum +
+      lineCents(item.unit_price, item.qty) +
+      lineCents(item.unit_tax, item.qty),
+    0,
+  )
   if (
-    !Number.isFinite(localTotal) ||
-    localTotal < 0 ||
-    Math.round(localTotal * 100) !== Math.round(calculatedTotal * 100)
+    toCents(localTotal) < 0 ||
+    !sameMoney(localTotal, fromCents(calculatedTotalCents))
   ) {
     throw new Error('Sale total does not match the immutable local price snapshots')
   }
@@ -1772,7 +1776,7 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') =
   const itemsHtml = (invoice.items || [])
     .map(
       (item: any) =>
-        `<tr><td>${escapeHtml(item.name || item.sku)}</td><td>${Number(item.qty)}</td><td>${Number(item.unit_price).toFixed(2)}</td><td>${(Number(item.unit_price) * Number(item.qty)).toFixed(2)}</td></tr>`,
+        `<tr><td>${escapeHtml(item.name || item.sku)}</td><td>${Number(item.qty)}</td><td>${formatMoney(item.unit_price || 0)}</td><td>${formatMoney(fromCents(lineCents(item.unit_price || 0, Number(item.qty))))}</td></tr>`,
     )
     .join('')
   const payment = (
@@ -1826,7 +1830,7 @@ ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') =
     </tbody>
   </table>
   <div class="totals">
-    ${isAr ? 'الإجمالي' : 'Total'}: <b>${Number(invoice.total || 0).toFixed(2)} ${isAr ? 'ج' : 'EGP'}</b><br>
+    ${isAr ? 'الإجمالي' : 'Total'}: <b>${formatMoney(invoice.total || 0)} ${isAr ? 'ج' : 'EGP'}</b><br>
     ${isAr ? 'الدفع' : 'Payment'}: ${escapeHtml(payment)}${cashInfo}<br>
     <span class="small">${isAr ? 'شامل الضريبة' : 'VAT included'}</span>
   </div>

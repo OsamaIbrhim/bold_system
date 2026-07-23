@@ -18,6 +18,15 @@ import { ListSalesDto } from './dto/list-sales.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { ListReturnsDto } from './dto/list-returns.dto';
 import { OfflineAccountingTicketService } from '../shifts/offline-accounting-ticket.service';
+import {
+  decimal,
+  lineMoney,
+  money,
+  moneyNumber,
+  moneyString,
+  sameMoney,
+  sumMoney,
+} from '../common/money';
 
 @Injectable()
 export class SalesService {
@@ -117,7 +126,7 @@ export class SalesService {
     normalized: ReturnType<SalesService['normalizeLines']>,
   ) {
     const canonicalMoney = (value: number | undefined) =>
-      value === undefined ? null : new Prisma.Decimal(value).toFixed(2);
+      value === undefined ? null : moneyString(value);
     const payload = {
       v: 1,
       branch_id: dto.branch_id,
@@ -365,8 +374,8 @@ export class SalesService {
 
       const saleItems = normalized.lines.map((line) => {
         const variant = variantsById.get(line.variant_id)!;
-        let unitPrice: number;
-        let unitTax: number;
+        let unitPrice: Prisma.Decimal;
+        let unitTax: Prisma.Decimal;
         if (normalized.mode === 'signed') {
           const claims = this.priceSnapshots.verify({
             branch_id: dto.branch_id,
@@ -376,8 +385,8 @@ export class SalesService {
             price_version: line.price_version!,
             price_token: line.price_token!,
           });
-          unitPrice = line.unit_price!;
-          unitTax = line.unit_tax!;
+          unitPrice = money(line.unit_price!);
+          unitTax = money(line.unit_tax!);
           acceptedSnapshots.push({
             variant_id: line.variant_id,
             price_version: claims.price_version,
@@ -385,34 +394,29 @@ export class SalesService {
           });
         } else {
           const quote = currentQuotes!.get(line.variant_id)!;
-          unitPrice = quote.net_price;
-          unitTax = quote.tax_amount;
+          unitPrice = money(quote.net_price);
+          unitTax = money(quote.tax_amount);
         }
         return {
           variant_id: line.variant_id,
           qty: line.qty,
           unit_price: unitPrice,
-          unit_cost: Number(variant.cost_price),
+          unit_cost: money(variant.cost_price),
           tax: unitTax,
         };
       });
 
-      const subtotalDecimal = saleItems.reduce(
-        (sum, item) =>
-          sum.plus(new Prisma.Decimal(item.unit_price).mul(item.qty)),
-        new Prisma.Decimal(0),
-      ).toDecimalPlaces(2);
-      const taxDecimal = saleItems.reduce(
-        (sum, item) => sum.plus(new Prisma.Decimal(item.tax).mul(item.qty)),
-        new Prisma.Decimal(0),
-      ).toDecimalPlaces(2);
-      const subtotal = subtotalDecimal.toNumber();
-      const taxAmount = taxDecimal.toNumber();
-      const total = subtotalDecimal.plus(taxDecimal).toDecimalPlaces(2).toNumber();
+      const subtotal = sumMoney(
+        saleItems.map((item) => lineMoney(item.unit_price, item.qty)),
+      );
+      const taxAmount = sumMoney(
+        saleItems.map((item) => lineMoney(item.tax, item.qty)),
+      );
+      const total = money(subtotal.plus(taxAmount));
 
       if (
         dto.local_total !== undefined &&
-        Math.round(dto.local_total * 100) !== Math.round(total * 100)
+        !sameMoney(dto.local_total, total)
       ) {
         throw new UnprocessableEntityException({
           code: normalized.mode === 'legacy'
@@ -422,7 +426,7 @@ export class SalesService {
             ? 'فاتورة قديمة معلقة تختلف عن السعر الحالي وتحتاج مراجعة يدوية دون تغيير المبلغ المدفوع.'
             : 'إجمالي الفاتورة المحلية لا يطابق لقطات الأسعار الموقعة.',
           local_total: dto.local_total,
-          server_total: total,
+          server_total: moneyNumber(total),
         });
       }
 
@@ -603,9 +607,9 @@ export class SalesService {
         sales_invoice_item_id: string;
         variant_id: string;
         qty: number;
-        unit_price: number;
-        unit_cost: number;
-        unit_tax: number;
+        unit_price: Prisma.Decimal;
+        unit_cost: Prisma.Decimal;
+        unit_tax: Prisma.Decimal;
       }[] = [];
 
       for (const [saleItemId, qty] of requested) {
@@ -637,46 +641,32 @@ export class SalesService {
           );
         }
 
-        let unitTax = Number(soldItem.unit_tax);
-        if (unitTax === 0 && Number(original.subtotal) > 0) {
-          unitTax =
-            Math.round(
-              Number(soldItem.unit_price) *
-                (Number(original.tax_amount) / Number(original.subtotal)) *
-                100,
-            ) / 100;
+        let unitTax = money(soldItem.unit_tax);
+        if (unitTax.isZero() && decimal(original.subtotal).gt(0)) {
+          unitTax = money(
+            decimal(soldItem.unit_price)
+              .mul(original.tax_amount)
+              .div(original.subtotal),
+          );
         }
 
         returnItems.push({
           sales_invoice_item_id: saleItemId,
           variant_id: soldItem.variant_id,
           qty,
-          unit_price: Number(soldItem.unit_price),
-          unit_cost: Number(soldItem.unit_cost),
+          unit_price: money(soldItem.unit_price),
+          unit_cost: money(soldItem.unit_cost),
           unit_tax: unitTax,
         });
       }
 
-      const refundSubtotalDecimal = returnItems
-        .reduce(
-          (sum, item) =>
-            sum.plus(new Prisma.Decimal(item.unit_price).mul(item.qty)),
-          new Prisma.Decimal(0),
-        )
-        .toDecimalPlaces(2);
-      const refundTaxDecimal = returnItems
-        .reduce(
-          (sum, item) =>
-            sum.plus(new Prisma.Decimal(item.unit_tax).mul(item.qty)),
-          new Prisma.Decimal(0),
-        )
-        .toDecimalPlaces(2);
-      const refundSubtotal = refundSubtotalDecimal.toNumber();
-      const refundTax = refundTaxDecimal.toNumber();
-      const refundTotal = refundSubtotalDecimal
-        .plus(refundTaxDecimal)
-        .toDecimalPlaces(2)
-        .toNumber();
+      const refundSubtotal = sumMoney(
+        returnItems.map((item) => lineMoney(item.unit_price, item.qty)),
+      );
+      const refundTax = sumMoney(
+        returnItems.map((item) => lineMoney(item.unit_tax, item.qty)),
+      );
+      const refundTotal = money(refundSubtotal.plus(refundTax));
       const totalReturnedQty = returnItems.reduce(
         (sum, item) => sum + item.qty,
         0,

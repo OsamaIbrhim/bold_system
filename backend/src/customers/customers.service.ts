@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomerDto, UpdateCustomerDto } from './dto/customer.dto';
+import { decimal } from '../common/money';
 
 @Injectable()
 export class CustomersService {
@@ -63,7 +64,7 @@ export class CustomersService {
     });
     if (!customer) return { eligible: false };
     const eligible =
-      customer.total_invoices >= 5 || Number(customer.total_spent) >= 2000;
+      customer.total_invoices >= 5 || decimal(customer.total_spent).gte(2000);
     return {
       eligible,
       total_invoices: customer.total_invoices,
