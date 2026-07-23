@@ -1,6 +1,10 @@
 import { PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
-import { enableTransferCommandContext } from './support/transfer-command-context.mjs'
+import {
+  enableTransferCommandContext,
+  markTransferFixtureShipped,
+  resolveTransferFixtureReceipt,
+} from './support/transfer-command-context.mjs'
 
 const prisma = new PrismaClient()
 
@@ -314,14 +318,6 @@ try {
       })
 
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED')
-      await tx.transfer.update({
-        where: { id: transfer.id },
-        data: {
-          status: 'shipped',
-          shipped_by: actor.id,
-          shipped_at: new Date(),
-        },
-      })
       const transferOutChanged = await tx.$executeRaw`
         UPDATE "InventoryStock"
         SET "qty_on_hand" = "qty_on_hand" - 1
@@ -330,6 +326,11 @@ try {
           AND ("qty_on_hand" - "qty_reserved") >= 1
       `
       invariant(transferOutChanged === 1, 'Unable to apply transfer-out stock change')
+      await markTransferFixtureShipped(tx, {
+        transferId: transfer.id,
+        actorId: actor.id,
+        items: [{ id: transfer.items[0].id, quantity: 1 }],
+      })
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE')
       const transferOutMovement = await tx.inventoryMovement.findUnique({
         where: {
@@ -342,14 +343,6 @@ try {
       )
 
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED')
-      await tx.transfer.update({
-        where: { id: transfer.id },
-        data: {
-          status: 'received',
-          received_by: actor.id,
-          received_at: new Date(),
-        },
-      })
       await tx.inventoryStock.update({
         where: {
           branch_id_variant_id: {
@@ -358,6 +351,11 @@ try {
           },
         },
         data: { qty_on_hand: { increment: 1 } },
+      })
+      await resolveTransferFixtureReceipt(tx, {
+        transferId: transfer.id,
+        actorId: actor.id,
+        items: [{ id: transfer.items[0].id, received: 1 }],
       })
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE')
       const transferInMovement = await tx.inventoryMovement.findUnique({
