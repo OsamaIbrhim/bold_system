@@ -7,6 +7,19 @@ describe('migration CI database isolation', () => {
     'utf8',
   );
 
+  const getJob = (jobName: string): string => {
+    const jobStart = workflow.search(new RegExp(`^  ${jobName}:\\r?$`, 'm'));
+
+    expect(jobStart).toBeGreaterThanOrEqual(0);
+
+    const remainingJobs = workflow.slice(jobStart + 1);
+    const nextJob = remainingJobs.search(/^  [a-z0-9-]+:\r?$/m);
+
+    return nextJob === -1
+      ? workflow.slice(jobStart)
+      : workflow.slice(jobStart, jobStart + 1 + nextJob);
+  };
+
   it('uses a separate PostgreSQL database for each migration target and shadow', () => {
     const databaseNames = [
       'bold_migrations_clean',
@@ -25,5 +38,20 @@ describe('migration CI database isolation', () => {
     expect(new Set(databaseNames).size).toBe(databaseNames.length);
     expect(workflow).toContain('createdb');
     expect(workflow).not.toMatch(/bold_migrations\?schema=/);
+  });
+
+  it('authorizes destructive reset only in local seeded CI jobs', () => {
+    for (const jobName of ['hard-smoke', 'hard-load']) {
+      const job = getJob(jobName);
+
+      expect(job).toContain(
+        'DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_perf',
+      );
+      expect(job).toContain('npm run prisma:seed');
+      expect(job).toContain(
+        'ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting',
+      );
+      expect(job).not.toContain('ALLOW_REMOTE_DEVELOPMENT_ACCOUNTING_RESET');
+    }
   });
 });
