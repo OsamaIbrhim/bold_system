@@ -97,7 +97,7 @@ describe('transfer state migration contract', () => {
     );
 
     expect(packageJson.scripts['test:hard:smoke']).toContain(
-      'hard-load.mjs --smoke',
+      'run-hard-suite.mjs --smoke',
     );
     expect(packageJson.scripts['test:hard:smoke']).not.toContain(
       'PERF_SMOKE=1',

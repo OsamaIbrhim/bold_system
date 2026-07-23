@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
+import { enableTransferCommandContext } from './support/transfer-command-context.mjs'
 
 const prisma = new PrismaClient()
 
@@ -60,6 +61,8 @@ let summary
 try {
   await prisma.$transaction(
     async (tx) => {
+      await enableTransferCommandContext(tx)
+
       let sourceStock = await tx.inventoryStock.findFirst({
         where: {
           branch: { is_active: true },

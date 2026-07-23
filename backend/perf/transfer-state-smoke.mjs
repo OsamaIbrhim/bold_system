@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { PrismaClient, Prisma } from '@prisma/client'
+import { enableTransferCommandContext } from './support/transfer-command-context.mjs'
 
 const prisma = new PrismaClient()
 const rollback = Symbol('rollback')
@@ -7,7 +8,7 @@ const rollback = Symbol('rollback')
 try {
   await prisma.$transaction(
     async (tx) => {
-      await tx.$queryRaw`SELECT set_config('bold.transfer_command', 'on', true)`
+      await enableTransferCommandContext(tx)
 
       const actor = await tx.user.findFirst({
         where: { role: { in: ['owner', 'warehouse_manager'] }, is_active: true },

@@ -52,6 +52,12 @@ describe('migration CI database isolation', () => {
         'ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting',
       );
       expect(job).not.toContain('ALLOW_REMOTE_DEVELOPMENT_ACCOUNTING_RESET');
+      expect(job).toContain('PERF_LOGIN_PHONE: "+200100000000"');
     }
+
+    expect(getJob('hard-load')).toContain(
+      'PERF_CASHIER_PHONE: "+200100000002"',
+    );
+    expect(workflow).not.toMatch(/PERF_(?:LOGIN|CASHIER)_PHONE:\s+\+\d/);
   });
 });
