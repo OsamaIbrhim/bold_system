@@ -6,14 +6,18 @@ export type User = {
 }
 
 export type Session = {
-  access_token: string
-  refresh_token: string
   user: User
 }
 
+<<<<<<< HEAD
+=======
+export type {
+  OfflineAccountingSummary as OfflineAccountingContext,
+} from '../electron/offline-accounting'
+
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
 export type DeviceCredential = {
   device_id: string
-  device_token: string
   branch_id: string
   terminal_id: string
   terminal_code: string
@@ -119,12 +123,15 @@ export type SyncState = {
 
 export type AppView = 'register' | 'sales'
 
-export type SaleDraft = {
+export type HeldSale = {
   id: string
   customer: Customer | null
   items: CartItem[]
+  item_count: number
+  total: number
   created_at: string
   updated_at: string
+  resume_error?: string | null
 }
 
 export type ReturnRecord = {

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "repairs": [
+    {
+      "migration": "202607230002_transfer_state_machine",
+      "baseSha256": "3a9b652297dbc238a64bce03ae24eba0d13e552bb4d1d893abf21af1b43fdb12",
+      "repairedSha256": "5c336fc89e882837d8e1168538c823ed07ad60858a6592ef627503ffef27e12c",
+      "upgradeFromRef": "156d237",
+      "incident": "Production migration failed with P3009/P3018 before it was ever applied successfully; this exact repair makes the failed migration resumable and drains the legacy deferred trigger before backfill DDL."
+    }
+  ]
+}

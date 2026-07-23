@@ -21,6 +21,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
 import { TerminalsModule } from './terminals/terminals.module';
 import { PerformanceInterceptor } from './common/performance.interceptor';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { PerformanceInterceptor } from './common/performance.interceptor';
     SyncModule,
     ShiftsModule,
     TerminalsModule,
+    HealthModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

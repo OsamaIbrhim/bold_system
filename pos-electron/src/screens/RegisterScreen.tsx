@@ -1,9 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../api'
 import { bold } from '../electron'
+<<<<<<< HEAD
 import { CartItem, Customer, DeviceCredential, Product, Session, Shift, SyncState } from '../types'
+=======
+import { CartItem, Customer, DeviceCredential, HeldSale, OfflineAccountingContext, Product, Session, Shift, SyncState } from '../types'
+import { offlineAccountingSummaryMatches } from '../../electron/offline-accounting'
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
 import { ConfirmDialog, FieldError, Modal, NumericKeypad } from '../components/ui'
-import { cartTotals, isValidEgyptianPhone, money, normalizeEgyptianPhone, paymentLabel, readHeldSales, removeHeldSale, saveHeldSale } from '../utils'
+import { cartTotals, isValidEgyptianPhone, money, normalizeEgyptianPhone, paymentLabel } from '../utils'
 
 const paymentMethods = ['cash', 'card', 'instapay', 'vodafone_cash', 'installment'] as const
 
@@ -30,6 +35,7 @@ export function RegisterScreen({
   onCloseShift: () => void,
   notify: (message: string, tone?: 'success' | 'error' | 'info') => void,
 }) {
+<<<<<<< HEAD
   const [cart, setCart] = useState<CartItem[]>([])
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Product[]>([])
@@ -46,6 +52,44 @@ export function RegisterScreen({
   const runSearch = async (value = query) => {
     const term = value.trim()
     if (!term) return
+=======
+  const [cart,setCart]=useState<CartItem[]>([])
+  const [query,setQuery]=useState('')
+  const [results,setResults]=useState<Product[]>([])
+  const [searching,setSearching]=useState(false)
+  const [customer,setCustomer]=useState<Customer|null>(null)
+  const [customerOpen,setCustomerOpen]=useState(false)
+  const [checkoutOpen,setCheckoutOpen]=useState(false)
+  const [heldOpen,setHeldOpen]=useState(false)
+  const [heldSales,setHeldSales]=useState<HeldSale[]>([])
+  const [heldLoading,setHeldLoading]=useState(false)
+  const [confirmClear,setConfirmClear]=useState(false)
+  const [completed,setCompleted]=useState<any>(null)
+  const searchRef=useRef<HTMLInputElement | null>(null)
+  const totals=useMemo(()=>cartTotals(cart),[cart])
+  const accountingReady=offlineAccountingSummaryMatches(
+    accountingContext,
+    {session,device,shift},
+  )
+
+  const loadHeldSales=useCallback(async()=>{
+    if(!accountingReady){setHeldSales([]);return}
+    setHeldLoading(true)
+    try{setHeldSales(await bold.held_sales())}
+    catch(error){notify((error as Error).message,'error')}
+    finally{setHeldLoading(false)}
+  },[accountingReady,notify])
+
+  useEffect(()=>{
+    // Older builds stored unscoped drafts in renderer localStorage. They
+    // cannot be trusted or attributed to the current cashier/shift.
+    localStorage.removeItem('bold_pos_held_sales_v1')
+    void loadHeldSales()
+  },[loadHeldSales])
+
+  const runSearch=async(value=query)=>{
+    const term=value.trim(); if(!term)return
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
     setSearching(true)
     try {
       const local = await bold.search(term)
@@ -133,6 +177,7 @@ export function RegisterScreen({
     )
   }
 
+<<<<<<< HEAD
   const holdSale = () => {
     if (!cart.length) {
       notify('السلة فارغة', 'info')
@@ -142,6 +187,43 @@ export function RegisterScreen({
     setCart([])
     setCustomer(null)
     notify('تم تعليق الفاتورة ويمكن استكمالها لاحقًا', 'success')
+=======
+  const holdSale=async()=>{
+    if(!cart.length){notify('السلة فارغة','info');return}
+    if(!accountingReady){notify('لا يمكن تعليق الفاتورة قبل تجهيز هوية الكاشير والوردية على هذا الجهاز.','error');return}
+    try{
+      await bold.hold_sale({
+        items:cart.map((item)=>({variant_id:item.variant_id,qty:item.qty})),
+        customer,
+      })
+      setCart([]);setCustomer(null)
+      await loadHeldSales()
+      notify('تم تعليق الفاتورة داخل وردية هذا الكاشير','success')
+    }catch(error){notify((error as Error).message,'error')}
+  }
+
+  const resumeHeldSale=async(sale:HeldSale)=>{
+    if(cart.length){notify('أكمل أو علّق الفاتورة الحالية قبل استعادة مسودة أخرى.','error');return}
+    try{
+      const resumed=await bold.resume_held_sale(sale.id)
+      setCart(resumed.items)
+      setCustomer(resumed.customer)
+      setHeldOpen(false)
+      await loadHeldSales()
+      notify('تمت استعادة الفاتورة بأسعار ومخزون الكتالوج الحالي.','success')
+    }catch(error){
+      notify((error as Error).message,'error')
+      await loadHeldSales()
+    }
+  }
+
+  const deleteHeldSale=async(sale:HeldSale)=>{
+    try{
+      await bold.delete_held_sale(sale.id)
+      await loadHeldSales()
+      notify('تم حذف الفاتورة المعلقة.','success')
+    }catch(error){notify((error as Error).message,'error')}
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
   }
 
   useEffect(() => {
@@ -171,6 +253,7 @@ export function RegisterScreen({
     return () => window.removeEventListener('keydown', handler)
   }, [cart, customer, onSync])
 
+<<<<<<< HEAD
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -180,6 +263,33 @@ export function RegisterScreen({
             <b>Bold POS</b>
             <span>{device.terminal_code}</span>
           </div>
+=======
+  useEffect(()=>{
+    const handler=(event:KeyboardEvent)=>{
+      if(event.key==='F2'){event.preventDefault();searchRef.current?.focus()}
+      if(event.key==='F3'){event.preventDefault();setCustomerOpen(true)}
+      if(event.key==='F4'){event.preventDefault();void holdSale()}
+      if(event.key==='F8'){event.preventDefault();onSync()}
+      if(event.key==='F10'){event.preventDefault();openCheckout()}
+    }
+    window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler)
+  },[cart,customer,onSync,syncState.catalog_valid_until,accountingReady])
+
+  return <div className="app-shell">
+    <header className="app-header">
+      <div className="header-brand"><div className="brand-mark small">B</div><div><b>Bold POS</b><span>{device.terminal_code}</span></div></div>
+      <nav className="main-nav"><button className="active">نقطة البيع</button><button onClick={onSales}>الفواتير والمرتجعات</button></nav>
+      <div className="header-status"><button className={`sync-pill ${syncState.sync_status}`} onClick={onSync}><span/><b>{syncState.sync_status==='success'?'متصل':syncState.sync_status==='syncing'?'مزامنة…':syncState.sync_status==='offline'?'غير متصل':'تنبيه'}</b><small>{syncState.pending_count} معلّق</small></button><div className="cashier-chip"><b>{session.user.name}</b><span>وردية منذ {new Date(shift.opened_at).toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'})}</span></div><button className="button secondary compact" onClick={onCloseShift}>إغلاق الوردية</button></div>
+    </header>
+
+    <main className="register-layout">
+      <section className="catalog-panel">
+        <div className="search-bar"><input ref={searchRef} value={query} onChange={(event)=>setQuery(event.target.value)} onKeyDown={(event)=>{if(event.key==='Enter')runSearch()}} placeholder="امسح الباركود أو ابحث بالـ SKU…" autoFocus/><button className="button primary" onClick={()=>runSearch()} disabled={searching}>{searching?'بحث…':'بحث'}</button></div>
+        <div className="quick-actions"><button onClick={()=>setCustomerOpen(true)}>F3 · العميل <b>{customer?.name||customer?.phone||'بدون عميل'}</b></button><button onClick={()=>void holdSale()}>F4 · تعليق الفاتورة</button><button onClick={()=>{setHeldOpen(true);void loadHeldSales()}}>الفواتير المعلقة <b>{heldSales.length}</b></button></div>
+        <div className="product-results">
+          {results.map((product)=><button className="product-card" key={product.id} onClick={()=>addProduct(product)}><div><b>{displayName(product)}</b><span>{product.sku}</span></div><div className="variant-meta"><span>{product.color||'—'}</span><span>{product.size||'—'}</span></div><strong>{money(product.selling_price)} ج</strong></button>)}
+          {!results.length&&<div className="catalog-empty"><div>⌁</div><h2>جاهز للمسح</h2><p>امسح باركود الصنف أو اكتب SKU ثم اضغط Enter.</p><span>F2 للعودة السريعة إلى البحث</span></div>}
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
         </div>
         <nav className="main-nav">
           <button className="active">نقطة البيع</button>
@@ -218,6 +328,7 @@ export function RegisterScreen({
         </div>
       </header>
 
+<<<<<<< HEAD
       <main className="register-layout">
         <section className="catalog-panel">
           <div className="search-bar">
@@ -422,6 +533,14 @@ export function RegisterScreen({
       />
     </div>
   )
+=======
+    <CustomerModal open={customerOpen} value={customer} onSelect={(value)=>{setCustomer(value);setCustomerOpen(false)}} onClose={()=>setCustomerOpen(false)} notify={notify}/>
+    <CheckoutModal open={checkoutOpen} items={cart} customer={customer} session={session} device={device} shift={shift} accountingContext={accountingContext} branchId={device.branch_id} catalogValidUntil={syncState.catalog_valid_until} totals={totals} onSaleSaved={onSync} onClose={()=>setCheckoutOpen(false)} onCompleted={(value)=>{setCheckoutOpen(false);setCart([]);setCustomer(null);setCompleted(value)}} notify={notify}/>
+    <HeldSalesModal open={heldOpen} sales={heldSales} loading={heldLoading} onClose={()=>setHeldOpen(false)} onResume={(sale)=>void resumeHeldSale(sale)} onDelete={(sale)=>void deleteHeldSale(sale)}/>
+    <SaleSuccessModal value={completed} onClose={()=>{setCompleted(null);searchRef.current?.focus()}}/>
+    <ConfirmDialog open={confirmClear} title="تفريغ السلة؟" message="سيتم حذف جميع الأصناف من الفاتورة الحالية." confirmLabel="تفريغ السلة" danger onClose={()=>setConfirmClear(false)} onConfirm={()=>{setCart([]);setConfirmClear(false)}}/>
+  </div>
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
 }
 
 function CustomerModal({
@@ -443,6 +562,7 @@ function CustomerModal({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+<<<<<<< HEAD
   useEffect(() => {
     if (open) {
       setPhone(value?.phone || '')
@@ -470,6 +590,34 @@ function CustomerModal({
     } finally {
       setLoading(false)
     }
+=======
+function CheckoutModal({open,items,customer,session,device,shift,accountingContext,branchId,catalogValidUntil,totals,onSaleSaved,onClose,onCompleted,notify}:{open:boolean,items:CartItem[],customer:Customer|null,session:Session,device:DeviceCredential,shift:Shift,accountingContext:OfflineAccountingContext|null,branchId:string,catalogValidUntil?:string|null,totals:ReturnType<typeof cartTotals>,onSaleSaved:()=>void,onClose:()=>void,onCompleted:(value:any)=>void,notify:(message:string,tone?:'success'|'error'|'info')=>void}){
+  const [method,setMethod]=useState<typeof paymentMethods[number]>('cash')
+  const [received,setReceived]=useState('')
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+  const paymentLock=useRef(false)
+  useEffect(()=>{if(open){paymentLock.current=false;setMethod('cash');setReceived('');setBusy(false);setError('')}},[open])
+  const receivedValue=Number(received||0),change=Math.max(0,receivedValue-totals.total)
+  const confirm=async()=>{
+    if(paymentLock.current||busy)return
+    if(!offlineAccountingSummaryMatches(accountingContext,{session,device,shift})){setError('انتهى أو تغير تفويض الكاشير والوردية. أغلق شاشة الدفع وشغّل الإنترنت لتجديده.');return}
+    if(!catalogIsFresh(catalogValidUntil)){setError('انتهت صلاحية كتالوج الأسعار. أغلق شاشة الدفع ونفّذ مزامنة.');return}
+    if(items.some((item)=>!hasSignedPrice(item))){setError('تحتوي الفاتورة على سعر غير موقع. أعد إضافة الصنف بعد المزامنة.');return}
+    if(method==='cash'&&receivedValue<totals.total){setError('المبلغ المستلم أقل من إجمالي الفاتورة.');return}
+    const phone=customer?.phone?normalizeEgyptianPhone(customer.phone):''
+    if(phone&&!isValidEgyptianPhone(phone)){setError('رقم العميل غير صحيح. صححه أو أزل العميل من الفاتورة.');return}
+    paymentLock.current=true;setBusy(true);setError('')
+    const payload={sync_id:crypto.randomUUID(),branch_id:branchId,customer_phone:phone||undefined,items:items.map((item)=>({variant_id:item.variant_id,qty:item.qty,unit_price:item.unit_price,unit_tax:item.unit_tax,price_version:item.price_version,price_token:item.price_token})),payment_method:method,language:'ar',local_total:totals.total}
+    try{
+      const saved=await bold.sale(payload)
+      onSaleSaved()
+      const receipt={invoice_number:`POS-${saved.sync_id.slice(0,8).toUpperCase()}`,occurred_at:saved.occurred_at,total:totals.total,subtotal:totals.subtotal,tax:totals.tax,payment_method:method,received:method==='cash'?receivedValue:undefined,change:method==='cash'?change:undefined,items}
+      const printResult=await bold.print(receipt,'ar').catch((printError)=>({ok:false,reason:(printError as Error).message}))
+      onCompleted({...receipt,sync_id:saved.sync_id,printed:!!printResult?.ok,print_error:printResult?.reason})
+      notify('تم حفظ البيع محليًا بأمان','success')
+    }catch(err){paymentLock.current=false;const value=err as Error;setError(value.message||'تعذر حفظ البيع محليًا');setBusy(false)}
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
   }
 
   const create = async () => {
@@ -547,6 +695,7 @@ function CustomerModal({
   )
 }
 
+<<<<<<< HEAD
 function CheckoutModal({
   open,
   items,
@@ -725,6 +874,10 @@ function CheckoutModal({
       </div>
     </Modal>
   )
+=======
+function HeldSalesModal({open,sales,loading,onClose,onResume,onDelete}:{open:boolean,sales:HeldSale[],loading:boolean,onClose:()=>void,onResume:(sale:HeldSale)=>void,onDelete:(sale:HeldSale)=>void}){
+  return <Modal open={open} title="الفواتير المعلقة لهذه الوردية" onClose={onClose} width="760px"><div className="held-list">{loading&&<div className="empty-state"><b>جارٍ فحص المسودات…</b></div>}{!loading&&sales.map((sale)=><article key={sale.id}><div><b>{sale.customer?.name||sale.customer?.phone||'بدون عميل'}</b><span>{new Date(sale.created_at).toLocaleString('ar-EG')}</span>{sale.resume_error&&<small className="danger-text">{sale.resume_error}</small>}</div><div><b>{sale.item_count} قطعة</b><span>{sale.resume_error?'تحتاج مراجعة':`${money(sale.total)} ج`}</span></div><button className="button primary" disabled={!!sale.resume_error} onClick={()=>onResume(sale)}>استكمال</button><button className="icon-button" aria-label="حذف الفاتورة المعلقة" onClick={()=>onDelete(sale)}>×</button></article>)}{!loading&&!sales.length&&<div className="empty-state"><b>لا توجد فواتير معلقة</b><span>استخدم F4 لتعليق الفاتورة الحالية داخل نفس الوردية.</span></div>}</div></Modal>
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
 }
 
 function HeldSalesModal({

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { api, ApiError } from './api'
 import { DeviceCredential, Session, Shift, SyncState, AppView } from './types'
 import { startSync, syncLoop } from './sync'
+import { bold } from './electron'
 import { EnrollmentScreen } from './screens/EnrollmentScreen'
 import { LoginScreen } from './screens/LoginScreen'
 import { CloseShiftScreen, OpenShiftScreen } from './screens/ShiftScreens'
@@ -131,6 +132,59 @@ export default function App() {
     })
   }, [device, notify])
 
+<<<<<<< HEAD
+=======
+  const openShiftCompleted = useCallback(
+    async (value: Shift) => {
+      localStorage.setItem('bold_current_shift', JSON.stringify(value))
+      setShift(value)
+      setView('register')
+      const context = await installAccountingContext(value)
+      notify(
+        context
+          ? 'تم فتح الوردية وتجهيز البيع المتصل ودون اتصال.'
+          : 'تم فتح الوردية، لكن الدفع متوقف حتى يتم إصدار التفويض المحاسبي.',
+        context ? 'success' : 'error',
+      )
+    },
+    [installAccountingContext, notify],
+  )
+
+  const requestShiftClose = useCallback(async () => {
+    try {
+      const heldSales = await bold.held_sales()
+      if (heldSales.length > 0) {
+        notify(
+          `لا يمكن إغلاق الوردية: توجد ${heldSales.length} فاتورة معلقة لهذا الكاشير. استكملها أو احذفها أولًا.`,
+          'error',
+        )
+        return
+      }
+    } catch (error) {
+      notify(
+        `تعذر التحقق من الفواتير المعلقة: ${(error as Error).message}`,
+        'error',
+      )
+      return
+    }
+    if (syncState.pending_count > 0) {
+      notify(
+        `لا يمكن إغلاق الوردية: توجد ${syncState.pending_count} عملية محلية غير محسومة. نفّذ المزامنة أو راجع العملية الفاشلة أولًا.`,
+        'error',
+      )
+      return
+    }
+    if (syncState.sync_status !== 'success') {
+      notify(
+        'لا يمكن إغلاق الوردية قبل اتصال ناجح بالخادم وتأكيد عدم وجود عمليات معلقة.',
+        'error',
+      )
+      return
+    }
+    setClosingShift(true)
+  }, [notify, syncState.pending_count, syncState.sync_status])
+
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
   if (booting) {
     return <ScreenLoader message="جارٍ فحص الجهاز والجلسة الآمنة…" />
   }

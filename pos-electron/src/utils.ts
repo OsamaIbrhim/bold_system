@@ -1,4 +1,4 @@
-import { CartItem, SaleDraft } from './types'
+import { CartItem } from './types'
 
 export const toCents = (value: number) =>
   Math.round((Number.isFinite(value) ? value : 0) * 100)
@@ -31,39 +31,6 @@ export function normalizeEgyptianPhone(value: string) {
 
 export function isValidEgyptianPhone(value: string) {
   return /^(?:\+20|0)1[0125]\d{8}$/.test(normalizeEgyptianPhone(value))
-}
-
-const HELD_SALES_KEY = 'bold_pos_held_sales_v1'
-
-export function readHeldSales(): SaleDraft[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(HELD_SALES_KEY) || '[]')
-    return Array.isArray(value) ? value : []
-  } catch {
-    return []
-  }
-}
-
-export function writeHeldSales(value: SaleDraft[]) {
-  localStorage.setItem(HELD_SALES_KEY, JSON.stringify(value.slice(0, 50)))
-}
-
-export function saveHeldSale(
-  draft: Omit<SaleDraft, 'id' | 'created_at' | 'updated_at'>,
-) {
-  const now = new Date().toISOString()
-  const value: SaleDraft = {
-    ...draft,
-    id: crypto.randomUUID(),
-    created_at: now,
-    updated_at: now,
-  }
-  writeHeldSales([value, ...readHeldSales()])
-  return value
-}
-
-export function removeHeldSale(id: string) {
-  writeHeldSales(readHeldSales().filter((sale) => sale.id !== id))
 }
 
 export function paymentLabel(method: string) {

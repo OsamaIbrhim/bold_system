@@ -6,7 +6,6 @@ describe('POS secure startup state', () => {
     expect(
       validDevice({
         device_id: 'device-1',
-        device_token: 'token',
         branch_id: 'undefined',
         terminal_id: 'terminal',
         terminal_code: 'POS-1',
@@ -15,19 +14,58 @@ describe('POS secure startup state', () => {
     expect(
       validAuth({
         session: {
-          access_token: 'a',
-          refresh_token: 'r',
           user: { id: 'u', branch_id: 'undefined' },
         },
+        offline_valid_until: '2026-07-23T12:00:00.000Z',
       }),
     ).toBe(false)
   })
 
+<<<<<<< HEAD
+=======
+
+  it('rejects expired or malformed offline accounting authorization', () => {
+    const context = {
+      v: 1,
+      purpose: 'pos-offline-accounting',
+      key_id: 'offline-2026',
+      authorized: true,
+      session_id: 'session-1',
+      user_id: 'user-1',
+      role: 'cashier',
+      branch_id: 'branch-1',
+      terminal_id: 'terminal-1',
+      shift_id: 'shift-1',
+      issued_at: '2026-07-22T09:00:00.000Z',
+      expires_at: '2026-07-22T11:00:00.000Z',
+      server_last_sale_sequence: '7',
+    }
+
+    expect(
+      validOfflineAccountingContext(
+        context,
+        Date.parse('2026-07-22T10:00:00.000Z'),
+      ),
+    ).toBe(true)
+    expect(
+      validOfflineAccountingContext(
+        context,
+        Date.parse('2026-07-22T11:00:00.000Z'),
+      ),
+    ).toBe(false)
+    expect(
+      validOfflineAccountingContext(
+        { ...context, server_last_sale_sequence: '1.5' },
+        Date.parse('2026-07-22T10:00:00.000Z'),
+      ),
+    ).toBe(false)
+  })
+
+>>>>>>> 27adfdb (ci: add migration-gate job and concurrency group)
   it('accepts a complete enrolled device and cashier session', () => {
     expect(
       validDevice({
         device_id: 'device-1',
-        device_token: 'token',
         branch_id: 'branch-1',
         terminal_id: 'terminal-1',
         terminal_code: 'POS-1',
@@ -36,8 +74,6 @@ describe('POS secure startup state', () => {
     expect(
       validAuth({
         session: {
-          access_token: 'access',
-          refresh_token: 'refresh',
           user: { id: 'user-1', branch_id: 'branch-1' },
         },
         offline_valid_until: '2026-07-20T00:00:00.000Z',
