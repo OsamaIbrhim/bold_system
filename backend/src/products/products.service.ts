@@ -193,7 +193,6 @@ export class ProductsService {
         size: dto.size,
         color: dto.color,
         style: dto.style,
-        cost_price: dto.cost_price !== undefined ? dto.cost_price : undefined,
       }
     });
   }

@@ -63,4 +63,27 @@ describe('ProductsService pagination', () => {
     expect(prisma.productVariant.count).toHaveBeenCalledTimes(1);
     expect(prisma.productVariant.findMany).toHaveBeenCalledTimes(2);
   });
+
+
+  it('does not expose moving-average cost as an editable variant field', async () => {
+    const prisma = {
+      productVariant: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'v1' }),
+        update: jest.fn().mockResolvedValue({ id: 'v1' }),
+      },
+    };
+    const service = new ProductsService(prisma as any);
+
+    await service.updateVariant('v1', {
+      sku: 'UPDATED-SKU',
+    });
+
+    expect(prisma.productVariant.update).toHaveBeenCalledWith({
+      where: { id: 'v1' },
+      data: expect.not.objectContaining({
+        cost_price: expect.anything(),
+      }),
+    });
+  });
+
 });

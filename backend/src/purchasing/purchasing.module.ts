@@ -1,5 +1,10 @@
 import { Module } from '@nestjs/common';
 import { PurchasingService } from './purchasing.service';
 import { PurchasingController } from './purchasing.controller';
-@Module({ providers: [PurchasingService], controllers: [PurchasingController] })
+
+@Module({
+  providers: [PurchasingService],
+  controllers: [PurchasingController],
+  exports: [PurchasingService],
+})
 export class PurchasingModule {}
