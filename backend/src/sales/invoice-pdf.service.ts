@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { lineMoney, moneyString } from '../common/money';
 
 // pdfkit is a CommonJS package.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -29,8 +30,11 @@ export function visualRtl(value: unknown) {
 }
 
 function money(value: unknown) {
-  const amount = Number(value ?? 0);
-  return Number.isFinite(amount) ? amount.toFixed(2) : '0.00';
+  try {
+    return moneyString(String(value ?? 0));
+  } catch {
+    return '0.00';
+  }
 }
 
 @Injectable()
@@ -115,7 +119,10 @@ export class InvoicePdfService {
           name: isArabic ? visualRtl(rawName) : String(rawName),
           qty: String(item.qty ?? 0),
           unitPrice: money(item.unit_price),
-          total: money(Number(item.unit_price || 0) * Number(item.qty || 0)),
+          total: lineMoney(
+            String(item.unit_price ?? 0),
+            Number(item.qty ?? 0),
+          ).toFixed(2),
         };
         const nameColumn = columns.find((column) => column.key === 'name')!;
         const rowHeight = Math.max(28, doc.heightOfString(values.name, {

@@ -3,6 +3,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { assertBranchAccess } from '../auth/branch-access';
+import { decimal, moneyNumber } from '../common/money';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class OffersService {
@@ -30,7 +32,12 @@ export class OffersService {
       if (pendingByStock.has(key)) continue;
       const quote = await this.pricing.calculate(stock.variant_id);
       const currentPrice = quote.selling_price;
-      const suggestedPrice = Math.max(quote.min_allowed_price, Math.round(currentPrice * 0.9));
+      const suggestedPrice = moneyNumber(
+        Prisma.Decimal.max(
+          decimal(quote.min_allowed_price),
+          decimal(currentPrice).mul('0.90'),
+        ),
+      );
       const created = await this.prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
         const existing = await tx.offerSuggestion.findFirst({

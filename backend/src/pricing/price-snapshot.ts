@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PriceSnapshotKey } from '../config/environment';
+import { moneyString } from '../common/money';
 
 export type PriceSnapshotClaims = {
   v: 2;
@@ -35,9 +36,9 @@ type ExpectedSnapshot = Omit<PriceSnapshotInput, 'issued_at'> & {
 };
 
 function canonicalMoney(value: number | string) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric < 0) throw new Error('Invalid money value');
-  return numeric.toFixed(2);
+  const canonical = moneyString(value);
+  if (canonical.startsWith('-')) throw new Error('Invalid money value');
+  return canonical;
 }
 
 export function priceVersion(input: Omit<PriceSnapshotInput, 'issued_at'>) {
