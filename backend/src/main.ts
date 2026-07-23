@@ -48,4 +48,9 @@ async function bootstrap() {
   await app.listen(environment.port, '0.0.0.0');
   console.log(`Bold API running on port ${environment.port}`);
 }
-bootstrap();
+bootstrap().catch((error: unknown) => {
+  const message =
+    error instanceof Error ? error.message : 'Unknown startup failure';
+  console.error(`Bold API failed to start: ${message}`);
+  process.exitCode = 1;
+});

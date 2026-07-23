@@ -13,11 +13,13 @@
     "test": "jest --runInBand",
     "test:soft": "npm test -- --runInBand && npm run build",
     "test:hard": "node perf/hard-load.mjs && node perf/inventory-ledger-smoke.mjs && node perf/purchasing-accounting-smoke.mjs && node perf/transfer-state-smoke.mjs",
-    "test:hard:smoke": "PERF_SMOKE=1 node perf/hard-load.mjs && node perf/inventory-ledger-smoke.mjs && node perf/purchasing-accounting-smoke.mjs && node perf/transfer-state-smoke.mjs",
+    "test:hard:smoke": "node perf/hard-load.mjs --smoke && node perf/inventory-ledger-smoke.mjs && node perf/purchasing-accounting-smoke.mjs && node perf/transfer-state-smoke.mjs",
     "perf:seed": "node perf/volume-seed.mjs",
     "test:watch": "jest --watch",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrations:policy": "node scripts/check-migration-policy.cjs",
     "prisma:seed": "ts-node prisma/reset-development-accounting.ts && ts-node prisma/seed.ts && node prisma/ensure-seeded-inventory-ledger.mjs && node prisma/ensure-seeded-cost-ledger.mjs"
   },
   "prisma": {

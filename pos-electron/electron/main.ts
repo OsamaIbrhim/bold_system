@@ -9,12 +9,32 @@ import {
   nextTerminalSequence,
   offlineAccountingContextMatches,
   OfflineAccountingContext,
+  toOfflineAccountingSummary,
 } from './offline-accounting'
 import {
   SIGNED_CATALOG_FORMAT_VERSION,
+  isValidCatalogStock,
   isValidSignedCatalogProduct,
   requiresFullCatalogRefresh,
 } from './catalog-format'
+import { assertAllowedApiRequest } from './api-policy'
+import { validateLocalSaleInput } from './sale-validation'
+import {
+  publicDevice,
+  sanitizeBootstrapState,
+} from './secure-public'
+import {
+  createOfflineLoginVerifier,
+  normalizeLoginPhone,
+  OfflineLoginVerifier,
+  verifyOfflineLogin,
+} from './offline-login'
+import {
+  HeldSaleScope,
+  parseHeldSaleItems,
+  sanitizeHeldSaleCustomer,
+  validateHeldSaleItems,
+} from './held-sale'
 // @ts-ignore
 import initSqlJs from 'sql.js'
 
@@ -34,19 +54,35 @@ function saveDb() {
   const data = db.export()
   const target = dbPath()
   const temporary = `${target}.tmp`
-  fs.writeFileSync(temporary, Buffer.from(data), { mode: 0o600 })
-  fs.renameSync(temporary, target)
-}
-type SecureState = {
-  auth?: {
-    session?: {
-      user?: {
-        id?: string
-        role?: string
-        branch_id?: string
-      }
-    }
+  try {
+    fs.writeFileSync(temporary, Buffer.from(data), { mode: 0o600 })
+    fs.renameSync(temporary, target)
+  } catch (error) {
+    try {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary)
+    } catch {}
+    throw error
   }
+}
+
+type AuthenticatedSession = {
+  access_token: string
+  refresh_token: string
+  user: {
+    id: string
+    name: string
+    role: 'branch_manager' | 'cashier'
+    branch_id: string
+  }
+}
+
+type PersistedAuth = {
+  session: AuthenticatedSession
+  offline_valid_until: string
+}
+
+type SecureState = {
+  auth?: PersistedAuth
   device?: {
     device_id: string
     device_token: string
@@ -55,7 +91,27 @@ type SecureState = {
     terminal_code: string
   }
   accounting?: OfflineAccountingContext
+  offline_login?: OfflineLoginVerifier
 }
+
+type ApiFailure = {
+  message: string
+  code: string
+  field?: string
+  request_id?: string
+  status?: number
+  details?: string[]
+}
+
+type RefreshResult = 'refreshed' | 'rejected' | 'network_error'
+
+const API_BASE =
+  process.env.BOLD_API_URL ||
+  (app.isPackaged
+    ? 'https://boldsystem-production.up.railway.app/api/v1'
+    : 'http://localhost:3000/api/v1')
+const API_TIMEOUT_MS = 15_000
+let refreshPromise: Promise<RefreshResult> | null = null
 
 
 function highestStoredSaleSequence() {
@@ -119,6 +175,286 @@ function writeSecureState(state: SecureState) {
   fs.renameSync(temporary, secureStatePath())
 }
 
+function publicBootstrapState() {
+  // Every application start must require a cashier login. Existing secure
+  // credentials remain available only to the main process for validated
+  // online refresh or offline password verification.
+  return sanitizeBootstrapState(readSecureState())
+}
+
+function apiFailure(error: any): ApiFailure {
+  return {
+    message:
+      error?.message ||
+      'تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مرة أخرى.',
+    code: error?.code || 'UNKNOWN_ERROR',
+    field: error?.field,
+    request_id: error?.request_id,
+    status: error?.status,
+    details: Array.isArray(error?.details)
+      ? error.details.map(String)
+      : undefined,
+  }
+}
+
+function envelope<T>(operation: () => T | Promise<T>) {
+  return Promise.resolve()
+    .then(operation)
+    .then((data) => ({ ok: true as const, data }))
+    .catch((error) => ({
+      ok: false as const,
+      error: apiFailure(error),
+    }))
+}
+
+async function fetchWithTimeout(
+  pathname: string,
+  init: RequestInit = {},
+) {
+  const controller = new AbortController()
+  const timer = setTimeout(
+    () => controller.abort(),
+    API_TIMEOUT_MS,
+  )
+  try {
+    return await fetch(`${API_BASE}${pathname}`, {
+      ...init,
+      signal: controller.signal,
+    })
+  } catch {
+    throw {
+      message:
+        'لا يمكن الوصول إلى الخادم. تحقق من الإنترنت أو عنوان الخادم.',
+      code: 'NETWORK_ERROR',
+    } satisfies ApiFailure
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function parseApiFailure(response: Response) {
+  const payload = await response.json().catch(() => ({}))
+  throw {
+    message:
+      payload.message_ar ||
+      payload.message ||
+      'تعذر تنفيذ الطلب.',
+    code:
+      payload.code ||
+      `HTTP_${response.status}`,
+    field: payload.field,
+    request_id: payload.request_id,
+    status: response.status,
+    details: Array.isArray(payload.details)
+      ? payload.details.map(String)
+      : undefined,
+  } satisfies ApiFailure
+}
+
+async function readJson(response: Response) {
+  if (response.status === 204) return null
+  return response.json()
+}
+
+function saveAuthenticatedSession(session: AuthenticatedSession) {
+  const state = readSecureState()
+  state.auth = {
+    session,
+    offline_valid_until: new Date(
+      Date.now() + 24 * 60 * 60 * 1000,
+    ).toISOString(),
+  }
+  writeSecureState(state)
+}
+
+function clearSessionState() {
+  const state = readSecureState()
+  delete state.auth
+  delete state.accounting
+  delete state.offline_login
+  writeSecureState(state)
+}
+
+function clearDeviceState() {
+  const state = readSecureState()
+  delete state.device
+  delete state.auth
+  delete state.accounting
+  delete state.offline_login
+  writeSecureState(state)
+}
+
+function offlineCashierLogin(
+  phone: string,
+  password: string,
+) {
+  const state = readSecureState()
+  const auth = state.auth
+  const device = state.device
+  const context = state.accounting
+  const offlineUntil = Date.parse(
+    String(auth?.offline_valid_until || ''),
+  )
+
+  if (
+    !auth?.session?.user ||
+    !device ||
+    !context ||
+    !Number.isFinite(offlineUntil) ||
+    offlineUntil <= Date.now() ||
+    !verifyOfflineLogin(
+      state.offline_login,
+      phone,
+      password,
+    ) ||
+    !offlineAccountingContextMatches(
+      context,
+      {
+        session: {
+          user: auth.session.user,
+        },
+        device,
+        shift: {
+          id: context.shift_id,
+          branch_id: context.branch_id,
+        },
+      },
+    )
+  ) {
+    throw {
+      message:
+        'لا يمكن تسجيل الدخول دون اتصال بهذه البيانات. اتصل بالخادم لتجديد جلسة الكاشير وتفويض الوردية.',
+      code: 'OFFLINE_LOGIN_UNAVAILABLE',
+    } satisfies ApiFailure
+  }
+
+  return {
+    session: { user: auth.session.user },
+    accounting:
+      toOfflineAccountingSummary(context),
+    offline: true,
+  }
+}
+
+async function refreshSession(): Promise<RefreshResult> {
+  const refreshToken =
+    readSecureState().auth?.session?.refresh_token
+  if (!refreshToken) return 'rejected'
+
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      let response: Response
+      try {
+        response = await fetchWithTimeout('/auth/refresh', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-request-id': randomUUID(),
+          },
+          body: JSON.stringify({
+            refresh_token: refreshToken,
+          }),
+        })
+      } catch {
+        return 'network_error' as const
+      }
+
+      if (!response.ok) return 'rejected' as const
+      saveAuthenticatedSession(
+        (await readJson(response)) as AuthenticatedSession,
+      )
+      return 'refreshed' as const
+    })().finally(() => {
+      refreshPromise = null
+    })
+  }
+
+  return refreshPromise
+}
+
+async function authenticatedFetch(
+  pathname: string,
+  input: {
+    method?: string
+    body?: unknown
+  } = {},
+  retry = true,
+): Promise<any> {
+  const state = readSecureState()
+  const response = await fetchWithTimeout(pathname, {
+    method: input.method || 'GET',
+    headers: {
+      ...(input.body !== undefined
+        ? { 'Content-Type': 'application/json' }
+        : {}),
+      ...(state.auth?.session?.access_token
+        ? {
+            Authorization:
+              `Bearer ${state.auth.session.access_token}`,
+          }
+        : {}),
+      ...(state.device?.device_token
+        ? {
+            'x-pos-device-token':
+              state.device.device_token,
+          }
+        : {}),
+      ...(state.device?.device_id
+        ? {
+            'x-pos-device-id': state.device.device_id,
+          }
+        : {}),
+      'x-request-id': randomUUID(),
+    },
+    body:
+      input.body !== undefined
+        ? JSON.stringify(input.body)
+        : undefined,
+  })
+
+  if (response.status === 401 && retry) {
+    const refresh = await refreshSession()
+    if (refresh === 'refreshed') {
+      return authenticatedFetch(pathname, input, false)
+    }
+    if (refresh === 'network_error') {
+      throw {
+        message:
+          'انقطع الاتصال أثناء تجديد الجلسة. لم يتم حذف تسجيل الجهاز أو بيانات الدخول.',
+        code: 'NETWORK_ERROR',
+      } satisfies ApiFailure
+    }
+  }
+
+  if (!response.ok) await parseApiFailure(response)
+  return readJson(response)
+}
+
+function persistedMutation<T>(operation: () => T): T {
+  const before = db.export()
+  let transactionOpen = false
+  try {
+    db.exec('BEGIN IMMEDIATE TRANSACTION')
+    transactionOpen = true
+    const result = operation()
+    db.exec('COMMIT')
+    transactionOpen = false
+    saveDb()
+    return result
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        db.exec('ROLLBACK')
+      } catch {}
+    }
+    try {
+      db.close()
+    } catch {}
+    db = new SQL.Database(before)
+    throw error
+  }
+}
+
 function q(sql: string, params: any[] = []) {
   const stmt = db.prepare(sql)
   try {
@@ -157,6 +493,170 @@ function setMeta(key: string, value: string) {
 
 function getMeta(key: string) {
   return String(get(`SELECT value FROM sync_meta WHERE key=?`, [key])?.value || '')
+}
+
+function currentHeldSaleScope(): HeldSaleScope {
+  const state = readSecureState()
+  const user = state.auth?.session?.user
+  const device = state.device
+  const context = state.accounting
+  if (
+    !user ||
+    !device ||
+    !context ||
+    context.user_id !== user.id ||
+    context.branch_id !== user.branch_id ||
+    context.branch_id !== device.branch_id ||
+    context.terminal_id !== device.terminal_id ||
+    !context.shift_id
+  ) {
+    throw new Error(
+      'لا يمكن الوصول إلى الفواتير المعلقة قبل تسجيل الكاشير وتجهيز الوردية على هذا الجهاز.',
+    )
+  }
+  return {
+    branch_id: context.branch_id,
+    cashier_id: context.user_id,
+    shift_id: context.shift_id,
+  }
+}
+
+function parseHeldCustomer(value: unknown) {
+  if (!value) return null
+  try {
+    return sanitizeHeldSaleCustomer(
+      JSON.parse(String(value)),
+    )
+  } catch {
+    throw new Error(
+      'بيانات عميل الفاتورة المعلقة تالفة. احذف المسودة وأعد إنشاءها.',
+    )
+  }
+}
+
+function hydrateHeldSale(row: any) {
+  const storedItems = parseHeldSaleItems(
+    row.items_json,
+  )
+  const items = storedItems.map((stored) => {
+    const product = get(
+      `SELECT p.*,COALESCE(s.qty,0) AS available_qty
+       FROM products p
+       LEFT JOIN stock s ON s.variant_id=p.id
+       WHERE p.id=?`,
+      [stored.variant_id],
+    )
+    const available = Number(
+      product?.available_qty,
+    )
+    const price = Number(
+      product?.selling_price,
+    )
+    const tax = Number(product?.unit_tax)
+    if (
+      !product ||
+      !isValidSignedCatalogProduct(product) ||
+      !Number.isInteger(available) ||
+      available < stored.qty ||
+      price <= 0
+    ) {
+      throw new Error(
+        `الصنف ${stored.variant_id} تغير أو لم تعد كميته كافية. احذف المسودة أو أعد بناءها من الكتالوج الحالي.`,
+      )
+    }
+    return {
+      ...product,
+      id: String(product.id),
+      variant_id: String(product.id),
+      name:
+        String(
+          product.name_ar ||
+          product.name_en ||
+          product.sku ||
+          product.id,
+        ),
+      qty: stored.qty,
+      unit_price: price,
+      unit_tax: tax,
+      available_qty: available,
+    }
+  })
+  const totalCents = items.reduce(
+    (sum, item) =>
+      sum +
+      (
+        Math.round(item.unit_price * 100) +
+        Math.round(item.unit_tax * 100)
+      ) * item.qty,
+    0,
+  )
+  return {
+    id: String(row.id),
+    customer: parseHeldCustomer(
+      row.customer_json,
+    ),
+    items,
+    item_count: items.reduce(
+      (sum, item) => sum + item.qty,
+      0,
+    ),
+    total: totalCents / 100,
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    resume_error: null,
+  }
+}
+
+function summarizeHeldSale(row: any) {
+  try {
+    return hydrateHeldSale(row)
+  } catch (error) {
+    let itemCount = 0
+    try {
+      itemCount = parseHeldSaleItems(
+        row.items_json,
+      ).reduce(
+        (sum, item) => sum + item.qty,
+        0,
+      )
+    } catch {}
+    let customer = null
+    try {
+      customer = parseHeldCustomer(
+        row.customer_json,
+      )
+    } catch {}
+    return {
+      id: String(row.id),
+      customer,
+      items: [],
+      item_count: itemCount,
+      total: 0,
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+      resume_error:
+        error instanceof Error
+          ? error.message
+          : 'تعذر استعادة الفاتورة المعلقة.',
+    }
+  }
+}
+
+function heldSaleRows(scope: HeldSaleScope) {
+  return q(
+    `SELECT *
+     FROM held_sales
+     WHERE branch_id=?
+       AND cashier_id=?
+       AND shift_id=?
+     ORDER BY created_at DESC
+     LIMIT 50`,
+    [
+      scope.branch_id,
+      scope.cashier_id,
+      scope.shift_id,
+    ],
+  )
 }
 
 function hasUnsignedCatalogProducts() {
@@ -243,6 +743,23 @@ async function initDb() {
       server_invoice_number TEXT,
       synced_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS held_sales (
+      id TEXT PRIMARY KEY,
+      branch_id TEXT NOT NULL,
+      cashier_id TEXT NOT NULL,
+      shift_id TEXT NOT NULL,
+      customer_json TEXT,
+      items_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS held_sales_scope_created_idx
+      ON held_sales (
+        branch_id,
+        cashier_id,
+        shift_id,
+        created_at DESC
+      );
     CREATE TABLE IF NOT EXISTS sync_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -319,8 +836,20 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
+      devTools: !app.isPackaged,
     },
+  })
+  win.webContents.setWindowOpenHandler(() => ({
+    action: 'deny',
+  }))
+  win.webContents.on('will-navigate', (event, url) => {
+    const allowed =
+      (!app.isPackaged &&
+        !!process.env.VITE_DEV_SERVER_URL &&
+        url.startsWith(process.env.VITE_DEV_SERVER_URL)) ||
+      (app.isPackaged && url.startsWith('file:'))
+    if (!allowed) event.preventDefault()
   })
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL)
@@ -334,6 +863,334 @@ app.whenReady().then(async () => { await initDb(); createWindow() })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+ipcMain.handle(
+  'api:bootstrap',
+  () => envelope(() => publicBootstrapState()),
+)
+
+ipcMain.handle(
+  'api:enroll',
+  (_event, enrollmentCode: string, terminal: any) =>
+    envelope(async () => {
+      const code = String(enrollmentCode || '')
+        .trim()
+        .toUpperCase()
+      const deviceId = String(terminal?.device_id || '')
+      const terminalName = String(
+        terminal?.terminal_name || '',
+      ).trim()
+      const appVersion = String(
+        terminal?.app_version || '',
+      ).trim()
+      if (
+        code.length !== 12 ||
+        !deviceId ||
+        !terminalName ||
+        !appVersion
+      ) {
+        throw {
+          message: 'بيانات تسجيل الجهاز غير مكتملة.',
+          code: 'TERMINAL_ENROLLMENT_INPUT_INVALID',
+        } satisfies ApiFailure
+      }
+
+      const response = await fetchWithTimeout(
+        '/terminals/enroll',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-request-id': randomUUID(),
+          },
+          body: JSON.stringify({
+            enrollment_code: code,
+            device_id: deviceId,
+            name: terminalName,
+            app_version: appVersion,
+          }),
+        },
+      )
+      if (!response.ok) await parseApiFailure(response)
+      const result = await readJson(response)
+      const enrolled = {
+        device_id: deviceId,
+        device_token: String(result?.device_token || ''),
+        branch_id: String(
+          result?.terminal?.branch?.id || '',
+        ),
+        terminal_id: String(result?.terminal?.id || ''),
+        terminal_code: String(
+          result?.terminal?.terminal_code || '',
+        ),
+      }
+      if (
+        !enrolled.device_token ||
+        !enrolled.branch_id ||
+        !enrolled.terminal_id ||
+        !enrolled.terminal_code
+      ) {
+        throw {
+          message:
+            'أعاد الخادم بيانات تسجيل جهاز غير مكتملة.',
+          code: 'TERMINAL_ENROLLMENT_RESPONSE_INVALID',
+        } satisfies ApiFailure
+      }
+
+      const state = readSecureState()
+      if (
+        state.device?.terminal_id !==
+        enrolled.terminal_id
+      ) {
+        delete state.auth
+        delete state.accounting
+        delete state.offline_login
+      }
+      state.device = enrolled
+      writeSecureState(state)
+      return publicDevice(enrolled)
+    }),
+)
+
+ipcMain.handle(
+  'api:login',
+  (_event, phone: string, password: string) =>
+    envelope(async () => {
+      const normalizedPhone =
+        normalizeLoginPhone(phone)
+      if (!normalizedPhone || String(password || '').length < 8) {
+        throw {
+          message: 'أدخل رقم الهاتف وكلمة المرور الصحيحين.',
+          code: 'POS_LOGIN_INPUT_INVALID',
+        } satisfies ApiFailure
+      }
+
+      let response: Response
+      try {
+        response = await fetchWithTimeout(
+          '/auth/login',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-request-id': randomUUID(),
+            },
+            body: JSON.stringify({
+              phone: normalizedPhone,
+              password,
+            }),
+          },
+        )
+      } catch (error: any) {
+        if (error?.code === 'NETWORK_ERROR') {
+          return offlineCashierLogin(
+            normalizedPhone,
+            password,
+          )
+        }
+        throw error
+      }
+      if (!response.ok) await parseApiFailure(response)
+      const value =
+        (await readJson(response)) as AuthenticatedSession
+      const state = readSecureState()
+
+      if (
+        !value?.access_token ||
+        !value?.refresh_token ||
+        !value?.user?.id
+      ) {
+        throw {
+          message:
+            'أعاد الخادم جلسة دخول غير مكتملة.',
+          code: 'POS_LOGIN_RESPONSE_INVALID',
+        } satisfies ApiFailure
+      }
+      if (
+        !['branch_manager', 'cashier'].includes(
+          value.user.role,
+        )
+      ) {
+        throw {
+          message:
+            'استخدم حساب كاشير أو مدير فرع في نقطة البيع.',
+          code: 'POS_ROLE_DENIED',
+        } satisfies ApiFailure
+      }
+      if (!value.user.branch_id) {
+        throw {
+          message:
+            'يجب ربط حساب الكاشير بفرع من لوحة الإدارة.',
+          code: 'USER_BRANCH_REQUIRED',
+        } satisfies ApiFailure
+      }
+      if (
+        !state.device ||
+        value.user.branch_id !== state.device.branch_id
+      ) {
+        throw {
+          message:
+            'حساب الكاشير تابع لفرع مختلف عن هذا الجهاز.',
+          code: 'USER_BRANCH_MISMATCH',
+        } satisfies ApiFailure
+      }
+
+      delete state.accounting
+      state.auth = {
+        session: value,
+        offline_valid_until: new Date(
+          Date.now() + 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      }
+      state.offline_login =
+        createOfflineLoginVerifier(
+          normalizedPhone,
+          password,
+        )
+      writeSecureState(state)
+      return {
+        session: { user: value.user },
+        accounting: null,
+        offline: false,
+      }
+    }),
+)
+
+ipcMain.handle(
+  'api:logout',
+  () =>
+    envelope(async () => {
+      const refreshToken =
+        readSecureState().auth?.session?.refresh_token
+      if (refreshToken) {
+        await fetchWithTimeout('/auth/logout', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-request-id': randomUUID(),
+          },
+          body: JSON.stringify({
+            refresh_token: refreshToken,
+          }),
+        }).catch(() => undefined)
+      }
+      clearSessionState()
+      return { cleared: true }
+    }),
+)
+
+ipcMain.handle(
+  'api:request',
+  (_event, input: any) =>
+    envelope(async () => {
+      const request = assertAllowedApiRequest(
+        input?.path,
+        input?.method,
+      )
+      const result = await authenticatedFetch(
+        request.pathname,
+        {
+          method: request.method,
+          body: input?.body,
+        },
+      )
+
+      if (request.pathname === '/auth/me') {
+        const state = readSecureState()
+        if (state.auth?.session && result?.id) {
+          saveAuthenticatedSession({
+            ...state.auth.session,
+            user: {
+              ...state.auth.session.user,
+              ...result,
+            },
+          })
+        }
+      }
+      return result
+    }),
+)
+
+ipcMain.handle(
+  'api:clear_session',
+  () =>
+    envelope(() => {
+      clearSessionState()
+      return { cleared: true }
+    }),
+)
+
+ipcMain.handle(
+  'api:clear_device',
+  () =>
+    envelope(() => {
+      clearDeviceState()
+      return { cleared: true }
+    }),
+)
+
+ipcMain.handle(
+  'api:clear_accounting',
+  () =>
+    envelope(() => {
+      const state = readSecureState()
+      delete state.accounting
+      writeSecureState(state)
+      return { cleared: true }
+    }),
+)
+
+ipcMain.handle(
+  'api:issue_accounting',
+  (_event, shiftId: string) =>
+    envelope(async () => {
+      const normalizedShiftId = String(
+        shiftId || '',
+      ).trim()
+      if (!normalizedShiftId) {
+        throw {
+          message: 'هوية الوردية مطلوبة.',
+          code: 'SHIFT_ID_REQUIRED',
+        } satisfies ApiFailure
+      }
+      const context =
+        (await authenticatedFetch(
+          `/shifts/${encodeURIComponent(normalizedShiftId)}/offline-context`,
+          { method: 'POST' },
+        )) as OfflineAccountingContext
+      const state = readSecureState()
+      const user = state.auth?.session?.user
+      const device = state.device
+      if (
+        !user ||
+        !device ||
+        !offlineAccountingContextMatches(
+          context,
+          {
+            session: { user },
+            device,
+            shift: {
+              id: normalizedShiftId,
+              branch_id: user.branch_id,
+            },
+          },
+        )
+      ) {
+        throw {
+          message:
+            'أعاد الخادم تفويضًا لا يطابق الكاشير أو الجهاز أو الوردية الحالية.',
+          code: 'OFFLINE_ACCOUNTING_CONTEXT_INVALID',
+        } satisfies ApiFailure
+      }
+
+      persistedMutation(() => {
+        alignLocalSequence(context)
+      })
+      state.accounting = context
+      writeSecureState(state)
+      return toOfflineAccountingSummary(context)
+    }),
+)
 
 ipcMain.handle('pos:search', (_e, qstr: string) => {
   const term = String(qstr || '').trim()
@@ -377,8 +1234,178 @@ ipcMain.handle('pos:list_local_sales', () =>
   ),
 )
 
+ipcMain.handle('pos:list_held_sales', () => {
+  const scope = currentHeldSaleScope()
+  return heldSaleRows(scope).map(
+    summarizeHeldSale,
+  )
+})
+
+ipcMain.handle('pos:hold_sale', (_event, input: any) => {
+  const scope = currentHeldSaleScope()
+  const items = validateHeldSaleItems(
+    input?.items,
+  )
+  const customer =
+    sanitizeHeldSaleCustomer(
+      input?.customer,
+    )
+  const now = new Date().toISOString()
+  const row = {
+    id: randomUUID(),
+    ...scope,
+    customer_json: customer
+      ? JSON.stringify(customer)
+      : null,
+    items_json: JSON.stringify(items),
+    created_at: now,
+    updated_at: now,
+  }
+
+  // Hydration ignores renderer-supplied prices and reads the current signed
+  // catalog and stock before accepting the draft.
+  const hydrated = hydrateHeldSale(row)
+  return persistedMutation(() => {
+    run(
+      `INSERT INTO held_sales (
+        id,branch_id,cashier_id,shift_id,
+        customer_json,items_json,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?)`,
+      [
+        row.id,
+        row.branch_id,
+        row.cashier_id,
+        row.shift_id,
+        row.customer_json,
+        row.items_json,
+        row.created_at,
+        row.updated_at,
+      ],
+    )
+    const stale = q(
+      `SELECT id
+       FROM held_sales
+       WHERE branch_id=?
+         AND cashier_id=?
+         AND shift_id=?
+       ORDER BY created_at DESC
+       LIMIT -1 OFFSET 50`,
+      [
+        scope.branch_id,
+        scope.cashier_id,
+        scope.shift_id,
+      ],
+    )
+    for (const draft of stale) {
+      run(
+        `DELETE FROM held_sales
+         WHERE id=?
+           AND branch_id=?
+           AND cashier_id=?
+           AND shift_id=?`,
+        [
+          draft.id,
+          scope.branch_id,
+          scope.cashier_id,
+          scope.shift_id,
+        ],
+      )
+    }
+    return hydrated
+  })
+})
+
+ipcMain.handle(
+  'pos:resume_held_sale',
+  (_event, id: string) => {
+    const scope = currentHeldSaleScope()
+    const row = get(
+      `SELECT *
+       FROM held_sales
+       WHERE id=?
+         AND branch_id=?
+         AND cashier_id=?
+         AND shift_id=?`,
+      [
+        String(id || ''),
+        scope.branch_id,
+        scope.cashier_id,
+        scope.shift_id,
+      ],
+    )
+    if (!row) {
+      throw new Error(
+        'الفاتورة المعلقة غير موجودة في وردية هذا الكاشير.',
+      )
+    }
+    const hydrated = hydrateHeldSale(row)
+    return persistedMutation(() => {
+      run(
+        `DELETE FROM held_sales
+         WHERE id=?
+           AND branch_id=?
+           AND cashier_id=?
+           AND shift_id=?`,
+        [
+          row.id,
+          scope.branch_id,
+          scope.cashier_id,
+          scope.shift_id,
+        ],
+      )
+      return hydrated
+    })
+  },
+)
+
+ipcMain.handle(
+  'pos:delete_held_sale',
+  (_event, id: string) => {
+    const scope = currentHeldSaleScope()
+    return persistedMutation(() => {
+      run(
+        `DELETE FROM held_sales
+         WHERE id=?
+           AND branch_id=?
+           AND cashier_id=?
+           AND shift_id=?`,
+        [
+          String(id || ''),
+          scope.branch_id,
+          scope.cashier_id,
+          scope.shift_id,
+        ],
+      )
+      return {
+        ok: db.getRowsModified() === 1,
+      }
+    })
+  },
+)
+
 ipcMain.handle('pos:sale', (_e, sale: any) => {
-  const syncId = String(sale?.sync_id || randomUUID())
+  const secure = readSecureState()
+  const authSession = secure.auth?.session
+  const context = secure.accounting
+  const device = secure.device
+  if (!device) {
+    throw new Error(
+      'This POS terminal is not enrolled',
+    )
+  }
+
+  const validated = validateLocalSaleInput(
+    sale,
+    device.branch_id,
+  )
+  const {
+    syncId,
+    items,
+    localTotal,
+    paymentMethod,
+    customerPhone,
+    language,
+  } = validated
   const existing = get(
     `SELECT sync_id,invoice_number,total,terminal_sequence,
             COALESCE(occurred_at,created_at) AS occurred_at
@@ -388,10 +1415,6 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
   )
   if (existing) return { ...existing, ok: true, replayed: true }
 
-  const secure = readSecureState()
-  const authSession = secure.auth?.session
-  const context = secure.accounting
-  const device = secure.device
   const shift = context
     ? { id: context.shift_id, branch_id: context.branch_id }
     : null
@@ -412,36 +1435,7 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
       'Offline accounting authorization is missing, expired, or does not match the current cashier, terminal, and shift',
     )
   }
-  if (String(sale?.branch_id || '') !== device.branch_id) {
-    throw new Error('The sale branch does not match this enrolled terminal')
-  }
-  if (!Array.isArray(sale?.items) || !sale.items.length) {
-    throw new Error('Sale must contain at least one item')
-  }
 
-  const items = sale.items.map((item: any) => ({
-    variant_id: String(item.variant_id || ''),
-    qty: Number(item.qty),
-    unit_price: Number(item.unit_price),
-    unit_tax: Number(item.unit_tax),
-    price_version: String(item.price_version || ''),
-    price_token: String(item.price_token || ''),
-  }))
-  if (items.some((item: any) =>
-    !item.variant_id ||
-    !Number.isInteger(item.qty) ||
-    item.qty < 1 ||
-    !Number.isFinite(item.unit_price) ||
-    item.unit_price <= 0 ||
-    !Number.isFinite(item.unit_tax) ||
-    item.unit_tax < 0 ||
-    !item.price_version ||
-    !item.price_token
-  )) {
-    throw new Error('Sale contains an invalid or unsigned price snapshot')
-  }
-
-  const localTotal = Number(sale.local_total || 0)
   const calculatedTotal = Math.round(
     items.reduce(
       (sum: number, item: any) =>
@@ -456,16 +1450,13 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
   ) {
     throw new Error('Sale total does not match the immutable local price snapshots')
   }
-  const paymentMethod = String(sale.payment_method || '')
-  if (!['cash', 'card', 'instapay', 'vodafone_cash', 'installment'].includes(paymentMethod)) {
-    throw new Error('Sale payment method is invalid')
-  }
   const occurredAt = new Date().toISOString()
   const terminalSequence = nextTerminalSequence(
     getMeta('terminal_sale_sequence'),
     context.server_last_sale_sequence,
   )
-  const invoiceNumber = String(sale.invoice_number || `LOCAL-${Date.now()}`)
+  const invoiceNumber =
+    `LOCAL-${device.terminal_code}-${terminalSequence}`
   const command = {
     sync_id: syncId,
     branch_id: device.branch_id,
@@ -475,14 +1466,13 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
     terminal_sequence: terminalSequence,
     occurred_at: occurredAt,
     offline_accounting_token: context.token,
-    customer_phone: sale.customer_phone || undefined,
+    customer_phone: customerPhone,
     items,
     payment_method: paymentMethod,
-    language: sale.language === 'en' ? 'en' : 'ar',
+    language,
   }
 
-  try {
-    db.exec('BEGIN IMMEDIATE TRANSACTION')
+  return persistedMutation(() => {
     for (const item of items) {
       run(
         `UPDATE stock SET qty=qty-? WHERE variant_id=? AND qty>=?`,
@@ -526,8 +1516,6 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
       ],
     )
     setMeta('terminal_sale_sequence', terminalSequence)
-    db.exec('COMMIT')
-    saveDb()
     return {
       sync_id: syncId,
       invoice_number: invoiceNumber,
@@ -535,10 +1523,7 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
       occurred_at: occurredAt,
       ok: true,
     }
-  } catch (error) {
-    try { db.exec('ROLLBACK') } catch {}
-    throw error
-  }
+  })
 })
 
 ipcMain.handle('sync:get_outbox', () =>
@@ -554,22 +1539,25 @@ ipcMain.handle('sync:get_outbox', () =>
 )
 
 ipcMain.handle('sync:mark_sending', (_e, id: string) => {
-  const now = new Date().toISOString()
-  run(
-    `UPDATE outbox
-     SET sync_status='sending',
-         attempt_count=COALESCE(attempt_count,0)+1,
-         last_attempt_at=?,
-         last_error=NULL,
-         updated_at=?
-     WHERE id=? AND sync_status='pending'`,
-    [now, now, id],
-  )
-  if (db.getRowsModified() !== 1) {
-    throw new Error(`Outbox operation is not pending: ${id}`)
-  }
-  saveDb()
-  return { ok: true }
+  return persistedMutation(() => {
+    const now = new Date().toISOString()
+    run(
+      `UPDATE outbox
+       SET sync_status='sending',
+           attempt_count=COALESCE(attempt_count,0)+1,
+           last_attempt_at=?,
+           last_error=NULL,
+           updated_at=?
+       WHERE id=? AND sync_status='pending'`,
+      [now, now, id],
+    )
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `Outbox operation is not pending: ${id}`,
+      )
+    }
+    return { ok: true }
+  })
 })
 
 ipcMain.handle('sync:mark_sent', (_e, result: {
@@ -581,8 +1569,7 @@ ipcMain.handle('sync:mark_sent', (_e, result: {
   const terminalSequence = String(
     get(`SELECT terminal_sequence FROM outbox WHERE id=?`, [result.id])?.terminal_sequence || '',
   )
-  try {
-    db.exec('BEGIN IMMEDIATE TRANSACTION')
+  const persisted = persistedMutation(() => {
     run(
       `UPDATE outbox
        SET sync_status='sent',
@@ -611,14 +1598,12 @@ ipcMain.handle('sync:mark_sent', (_e, result: {
         result.id,
       ],
     )
-    db.exec('COMMIT')
-    saveDb()
-    if (terminalSequence) updateSecureAcknowledgedSequence(terminalSequence)
     return { ok: true }
-  } catch (error) {
-    try { db.exec('ROLLBACK') } catch {}
-    throw error
+  })
+  if (terminalSequence) {
+    updateSecureAcknowledgedSequence(terminalSequence)
   }
+  return persisted
 })
 
 ipcMain.handle('sync:mark_failed', (_e, input: {
@@ -626,22 +1611,26 @@ ipcMain.handle('sync:mark_failed', (_e, input: {
   error: string,
   retryable: boolean,
 }) => {
-  const now = new Date().toISOString()
-  run(
-    `UPDATE outbox
-     SET sync_status=?,
-         last_error=?,
-         updated_at=?
-     WHERE id=?`,
-    [
-      input.retryable ? 'pending' : 'failed',
-      String(input.error || 'Unknown synchronization error').slice(0, 1000),
-      now,
-      input.id,
-    ],
-  )
-  saveDb()
-  return { ok: true }
+  return persistedMutation(() => {
+    const now = new Date().toISOString()
+    run(
+      `UPDATE outbox
+       SET sync_status=?,
+           last_error=?,
+           updated_at=?
+       WHERE id=?`,
+      [
+        input.retryable ? 'pending' : 'failed',
+        String(
+          input.error ||
+          'Unknown synchronization error',
+        ).slice(0, 1000),
+        now,
+        input.id,
+      ],
+    )
+    return { ok: true }
+  })
 })
 
 ipcMain.handle('sync:get_status', () => {
@@ -670,81 +1659,40 @@ ipcMain.handle('sync:get_status', () => {
 })
 
 ipcMain.handle('sync:set_status', (_e, status: any) => {
-  if (status.sync_status) setMeta('sync_status', String(status.sync_status))
-  if (status.last_sync_at) setMeta('last_sync_at', String(status.last_sync_at))
-  if ('catalog_valid_until' in status) setMeta('catalog_valid_until', status.catalog_valid_until ? String(status.catalog_valid_until) : '')
-  setMeta('last_error', status.last_error ? String(status.last_error).slice(0, 500) : '')
-  saveDb()
-  return { ok: true }
-})
-
-ipcMain.handle('secure:get', () => readSecureState())
-
-ipcMain.handle('secure:set_auth', (_e, auth: SecureState['auth'] | null) => {
-  const state = readSecureState()
-  if (auth) state.auth = auth
-  else {
-    delete state.auth
-    delete state.accounting
-  }
-  writeSecureState(state)
-  return { ok: true }
-})
-
-ipcMain.handle('secure:set_device', (_e, device: SecureState['device'] | null) => {
-  const state = readSecureState()
-  if (device) {
-    if (state.device?.terminal_id !== device.terminal_id) {
-      delete state.auth
-      delete state.accounting
-    }
-    state.device = device
-  } else {
-    delete state.device
-    delete state.auth
-    delete state.accounting
-  }
-  writeSecureState(state)
-  return { ok: true }
-})
-
-ipcMain.handle(
-  'secure:set_accounting',
-  (_e, context: OfflineAccountingContext | null) => {
-    const state = readSecureState()
-    if (!context) {
-      delete state.accounting
-      writeSecureState(state)
-      return { ok: true }
-    }
-    const user = state.auth?.session?.user
-    const device = state.device
-    if (
-      !user ||
-      !device ||
-      !offlineAccountingContextMatches(
-        context,
-        {
-          session: { user: user as any },
-          device,
-          shift: { id: context.shift_id, branch_id: context.branch_id },
-        },
-      )
-    ) {
-      throw new Error(
-        'Offline accounting context does not match the secure cashier and terminal state',
+  return persistedMutation(() => {
+    if (status.sync_status) {
+      setMeta(
+        'sync_status',
+        String(status.sync_status),
       )
     }
-    state.accounting = context
-    writeSecureState(state)
-    alignLocalSequence(context)
-    saveDb()
+    if (status.last_sync_at) {
+      setMeta(
+        'last_sync_at',
+        String(status.last_sync_at),
+      )
+    }
+    if ('catalog_valid_until' in status) {
+      setMeta(
+        'catalog_valid_until',
+        status.catalog_valid_until
+          ? String(status.catalog_valid_until)
+          : '',
+      )
+    }
+    setMeta(
+      'last_error',
+      status.last_error
+        ? String(status.last_error).slice(0, 500)
+        : '',
+    )
     return { ok: true }
-  },
-)
+  })
+})
 
 ipcMain.handle('sync:apply_pull', (_e, data: any) => {
   const products = Array.isArray(data?.products) ? data.products : []
+  const stock = Array.isArray(data?.stock) ? data.stock : []
   const refreshRequired = catalogNeedsFullRefresh()
 
   // Never advance an old cursor while the local database still requires the
@@ -755,19 +1703,30 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
     )
   }
 
-  // Validate the entire replacement before deleting the currently usable
-  // catalog. A malformed server response must leave the old database intact.
+  // Validate complete snapshots and deltas before changing the currently
+  // usable catalog. A malformed server response must leave the old database
+  // and cursor intact.
   if (
-    data?.reset_products &&
-    products.some((product: any) => !isValidSignedCatalogProduct(product))
+    products.some(
+      (product: any) =>
+        !isValidSignedCatalogProduct(product),
+    )
   ) {
     throw new Error(
       'The server returned a catalog containing an invalid signed price snapshot',
     )
   }
+  if (
+    stock.some(
+      (entry: any) => !isValidCatalogStock(entry),
+    )
+  ) {
+    throw new Error(
+      'The server returned invalid branch stock data',
+    )
+  }
 
-  try {
-    db.exec('BEGIN IMMEDIATE TRANSACTION')
+  return persistedMutation(() => {
     if (data.reset_products) db.exec('DELETE FROM products')
     if (data.reset_stock) db.exec('DELETE FROM stock')
     for (const id of data.deleted_variant_ids || []) {
@@ -786,10 +1745,10 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
         ],
       )
     }
-    for (const s of data.stock || []) {
+    for (const s of stock) {
       run(`INSERT OR REPLACE INTO stock (variant_id,qty) VALUES (?,?)`, [
         s.variant_id,
-        s.qty_on_hand || 0,
+        Number(s.qty_on_hand),
       ])
     }
     if (data.reset_products) {
@@ -797,13 +1756,8 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
     }
     if (data.cursor !== undefined) setMeta('sync_cursor', String(data.cursor))
     if (data.catalog_valid_until !== undefined) setMeta('catalog_valid_until', String(data.catalog_valid_until || ''))
-    db.exec('COMMIT')
-    saveDb()
     return { ok: true }
-  } catch (error) {
-    try { db.exec('ROLLBACK') } catch {}
-    throw error
-  }
+  })
 })
 
 ipcMain.handle('pos:print', async (_e, invoice: any, lang: 'ar' | 'en' = 'ar') => {

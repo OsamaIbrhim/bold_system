@@ -7,20 +7,11 @@ import {
   Shift,
 } from './types'
 import {
-  isValidOfflineAccountingContext,
-  offlineAccountingContextMatches,
+  isValidOfflineAccountingSummary,
+  offlineAccountingSummaryMatches,
 } from '../electron/offline-accounting'
-import { bold } from './electron'
+import { bold, IpcEnvelope } from './electron'
 
-const DEFAULT_API = import.meta.env.PROD
-  ? 'https://boldsystem-production.up.railway.app/api/v1'
-  : 'http://localhost:3000/api/v1'
-
-const API =
-  (typeof localStorage !== 'undefined' && localStorage.getItem('bold_api')) ||
-  DEFAULT_API
-
-const REQUEST_TIMEOUT_MS = 15_000
 const TERMINAL_CONFIRMATION_DELAY_MS = 2_000
 const TERMINAL_CONFIRMATION_WINDOW_MS = 60_000
 
@@ -32,11 +23,10 @@ const TERMINAL_INVALID_CODES = new Set([
 
 type PersistedAuth = { session: Session; offline_valid_until: string }
 type SecureState = {
-  auth?: PersistedAuth
-  device?: DeviceCredential
-  accounting?: OfflineAccountingContext
+  auth?: PersistedAuth | null
+  device?: DeviceCredential | null
+  accounting?: OfflineAccountingContext | null
 }
-type RefreshResult = 'refreshed' | 'rejected' | 'network_error'
 type TerminalEvidence = {
   code: string
   first_seen_at: number
@@ -72,7 +62,6 @@ let session: Session | null = null
 let persistedAuth: PersistedAuth | null = null
 let device: DeviceCredential | null = null
 let accountingContext: OfflineAccountingContext | null = null
-let refreshPromise: Promise<RefreshResult> | null = null
 let terminalEvidence: TerminalEvidence | null = null
 
 function validString(value: unknown): value is string {
@@ -88,7 +77,6 @@ export function validDevice(value: any): value is DeviceCredential {
   return (
     value &&
     validString(value.device_id) &&
-    validString(value.device_token) &&
     validString(value.branch_id) &&
     validString(value.terminal_id) &&
     validString(value.terminal_code)
@@ -98,10 +86,11 @@ export function validDevice(value: any): value is DeviceCredential {
 export function validAuth(value: any): value is PersistedAuth {
   return (
     value?.session &&
-    validString(value.session.access_token) &&
-    validString(value.session.refresh_token) &&
     validString(value.session.user?.id) &&
-    validString(value.session.user?.branch_id)
+    validString(value.session.user?.branch_id) &&
+    Number.isFinite(
+      Date.parse(String(value.offline_valid_until || '')),
+    )
   )
 }
 
@@ -109,7 +98,7 @@ export function validOfflineAccountingContext(
   value: unknown,
   nowMs = Date.now(),
 ) {
-  return isValidOfflineAccountingContext(value, nowMs)
+  return isValidOfflineAccountingSummary(value, nowMs)
 }
 
 function currentContextMatches(
@@ -117,7 +106,7 @@ function currentContextMatches(
   shift: Pick<Shift, 'id' | 'branch_id'>,
   minimumRemainingMs = 0,
 ) {
-  return !!session && !!device && offlineAccountingContextMatches(
+  return !!session && !!device && offlineAccountingSummaryMatches(
     context,
     { session, device, shift },
     Date.now(),
@@ -127,7 +116,7 @@ function currentContextMatches(
 
 async function clearAccountingContext() {
   accountingContext = null
-  await bold.secure_set_accounting(null).catch(() => undefined)
+  await bold.api_clear_accounting().catch(() => undefined)
 }
 
 export function terminalCredentialDisposition(
@@ -171,54 +160,16 @@ function resetTerminalFailure(path: string) {
   if (path === '/terminals/heartbeat') terminalEvidence = null
 }
 
-function networkError(message?: string) {
-  return new ApiError({
-    code: 'NETWORK_ERROR',
-    message_ar:
-      message ||
-      'لا يمكن الوصول إلى الخادم. تحقق من الإنترنت أو عنوان الخادم.',
-  })
-}
-
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit = {},
-  timeoutMs = REQUEST_TIMEOUT_MS,
-) {
-  const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
-
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    })
-  } finally {
-    window.clearTimeout(timer)
-  }
-}
-
-async function parseError(response: Response) {
-  const payload = await response.json().catch(() => ({}))
-  return new ApiError(payload, response.status)
-}
-
-async function saveSession(value: Session) {
-  session = value
-  persistedAuth = {
-    session: value,
-    offline_valid_until: new Date(
-      Date.now() + 24 * 60 * 60 * 1000,
-    ).toISOString(),
-  }
-  await bold.secure_set_auth(persistedAuth)
+function unwrap<T>(result: IpcEnvelope<T>): T {
+  if (result.ok) return result.data
+  throw new ApiError(result.error, result.error.status)
 }
 
 async function clearSession() {
   session = null
   persistedAuth = null
   accountingContext = null
-  await bold.secure_set_auth(null).catch(() => undefined)
+  await bold.api_clear_session().catch(() => undefined)
   window.dispatchEvent(new Event('bold-auth-expired'))
 }
 
@@ -226,95 +177,52 @@ async function clearDevice() {
   device = null
   terminalEvidence = null
   accountingContext = null
-  await bold.secure_set_device(null).catch(() => undefined)
+  await bold.api_clear_device().catch(() => undefined)
   session = null
   persistedAuth = null
   window.dispatchEvent(new Event('bold-auth-expired'))
   window.dispatchEvent(new Event('bold-terminal-invalid'))
 }
 
-async function refreshSession(): Promise<RefreshResult> {
-  if (!session?.refresh_token) return 'rejected'
-
-  if (!refreshPromise) {
-    refreshPromise = (async (): Promise<RefreshResult> => {
-      try {
-        const response = await fetchWithTimeout(`${API}/auth/refresh`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-request-id': crypto.randomUUID(),
-          },
-          body: JSON.stringify({ refresh_token: session?.refresh_token }),
-        })
-
-        if (!response.ok) return 'rejected'
-        await saveSession(await response.json())
-        return 'refreshed'
-      } catch {
-        return 'network_error'
-      }
-    })().finally(() => {
-      refreshPromise = null
-    })
-  }
-
-  return refreshPromise
-}
-
 async function request<T = any>(
   path: string,
-  init: RequestInit = {},
-  retry = true,
+  init: {
+    method?: string
+    body?: unknown
+  } = {},
 ): Promise<T> {
-  let response: Response
-
   try {
-    response = await fetchWithTimeout(`${API}${path}`, {
-      ...init,
-      headers: {
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(session?.access_token
-          ? { Authorization: `Bearer ${session.access_token}` }
-          : {}),
-        ...(device?.device_token
-          ? { 'x-pos-device-token': device.device_token }
-          : {}),
-        ...(device?.device_id ? { 'x-pos-device-id': device.device_id } : {}),
-        'x-request-id': crypto.randomUUID(),
-        ...(init.headers || {}),
-      },
-    })
-  } catch {
-    throw networkError()
-  }
-
-  if (response.status === 401 && retry) {
-    const refresh = await refreshSession()
-
-    if (refresh === 'refreshed') {
-      return request<T>(path, init, false)
-    }
-
-    if (refresh === 'network_error') {
-      throw networkError(
-        'انقطع الاتصال أثناء تجديد الجلسة. لم يتم حذف تسجيل الجهاز أو بيانات الدخول.',
-      )
-    }
-  }
-
-  if (!response.ok) {
-    const error = await parseError(response)
-
+    const value = unwrap(
+      await bold.api_request({
+        path,
+        method: init.method,
+        body: init.body,
+      }),
+    )
+    resetTerminalFailure(path)
+    return value as T
+  } catch (caught) {
+    const error =
+      caught instanceof ApiError
+        ? caught
+        : new ApiError({
+            code: 'UNKNOWN_ERROR',
+            message: (caught as Error)?.message,
+          })
     if (TERMINAL_INVALID_CODES.has(error.code)) {
-      if (registerTerminalFailure(error.code, path)) {
+      if (
+        registerTerminalFailure(
+          error.code,
+          path,
+        )
+      ) {
         await clearDevice()
       }
       throw error
     }
 
     if (
-      response.status === 401 &&
+      error.status === 401 &&
       !['/auth/me', '/auth/login'].includes(path)
     ) {
       await clearSession()
@@ -322,27 +230,28 @@ async function request<T = any>(
 
     throw error
   }
-
-  resetTerminalFailure(path)
-  return response.json()
 }
 
 export const api = {
-  base: API,
+  base: 'electron-main',
 
   bootstrap: async () => {
     for (const key of ['token', 'refresh_token', 'user', 'branch_id']) {
       localStorage.removeItem(key)
     }
 
-    const secure = (await bold.secure_get()) as SecureState
+    const secure = unwrap(
+      await bold.api_bootstrap(),
+    ) as SecureState
     device = null
     session = null
     persistedAuth = null
     accountingContext = null
 
     if (validDevice(secure.device)) device = secure.device
-    else if (secure.device) await bold.secure_set_device(null)
+    else if (secure.device) {
+      await bold.api_clear_device()
+    }
 
     if (validAuth(secure.auth)) {
       persistedAuth = secure.auth
@@ -353,8 +262,12 @@ export const api = {
       } else {
         try {
           const user = await request<any>('/auth/me')
-          session.user = { ...session.user, ...user }
-          await saveSession(session)
+          session = {
+            user: {
+              ...session.user,
+              ...user,
+            },
+          }
         } catch (error) {
           const offlineUntil = new Date(
             persistedAuth?.offline_valid_until || 0,
@@ -372,14 +285,14 @@ export const api = {
         }
       }
     } else if (secure.auth) {
-      await bold.secure_set_auth(null)
+      await bold.api_clear_session()
     }
 
     if (
       session &&
       device &&
       secure.accounting &&
-      isValidOfflineAccountingContext(secure.accounting) &&
+      isValidOfflineAccountingSummary(secure.accounting) &&
       secure.accounting.user_id === session.user.id &&
       secure.accounting.role === session.user.role &&
       secure.accounting.branch_id === session.user.branch_id &&
@@ -388,7 +301,7 @@ export const api = {
     ) {
       accountingContext = secure.accounting
     } else if (secure.accounting) {
-      await bold.secure_set_accounting(null)
+      await bold.api_clear_accounting()
     }
 
     return {
@@ -408,63 +321,30 @@ export const api = {
       app_version: string
     },
   ) => {
-    let response: Response
-
-    try {
-      response = await fetchWithTimeout(`${API}/terminals/enroll`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-request-id': crypto.randomUUID(),
-        },
-        body: JSON.stringify({
-          enrollment_code: enrollmentCode.trim().toUpperCase(),
-          device_id: terminal.device_id,
-          name: terminal.terminal_name,
-          app_version: terminal.app_version,
-        }),
-      })
-    } catch {
-      throw networkError(
-        'يجب الاتصال بالخادم لتسجيل هذا الجهاز للمرة الأولى.',
-      )
-    }
-
-    if (!response.ok) throw await parseError(response)
-
-    const result = await response.json()
-    device = {
-      device_id: terminal.device_id,
-      device_token: result.device_token,
-      branch_id: result.terminal.branch.id,
-      terminal_id: result.terminal.id,
-      terminal_code: result.terminal.terminal_code,
-    }
+    const enrolled: DeviceCredential = unwrap(
+      await bold.api_enroll(
+        enrollmentCode,
+        terminal,
+      ),
+    )
+    device = enrolled
     accountingContext = null
-    await bold.secure_set_device(device)
-    return device
+    return enrolled
   },
 
   login: async (phone: string, password: string) => {
     const normalizedPhone = phone.trim().replace(/\s+/g, '')
-    let response: Response
-
-    try {
-      response = await fetchWithTimeout(`${API}/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-request-id': crypto.randomUUID(),
-        },
-        body: JSON.stringify({ phone: normalizedPhone, password }),
-      })
-    } catch {
-      throw networkError('أول تسجيل دخول للكاشير يتطلب اتصالاً بالخادم.')
-    }
-
-    if (!response.ok) throw await parseError(response)
-
-    const value: Session = await response.json()
+    const result: {
+      session: Session
+      accounting: OfflineAccountingContext | null
+      offline: boolean
+    } = unwrap(
+      await bold.api_login(
+        normalizedPhone,
+        password,
+      ),
+    )
+    const value = result.session
 
     if (!['branch_manager', 'cashier'].includes(value.user.role)) {
       throw new ApiError({
@@ -487,23 +367,25 @@ export const api = {
       })
     }
 
-    await clearAccountingContext()
-    await saveSession(value)
+    session = value
+    accountingContext = result.accounting
+    persistedAuth = {
+      session: value,
+      offline_valid_until: new Date(
+        Date.now() + 24 * 60 * 60 * 1000,
+      ).toISOString(),
+    }
     return value
   },
 
   logout: async () => {
-    const refreshToken = session?.refresh_token
-
-    if (refreshToken) {
-      await fetchWithTimeout(`${API}/auth/logout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      }).catch(() => undefined)
-    }
-
-    await clearSession()
+    unwrap(await bold.api_logout())
+    session = null
+    persistedAuth = null
+    accountingContext = null
+    window.dispatchEvent(
+      new Event('bold-auth-expired'),
+    )
   },
 
   search: (q: string, branchId?: string) =>
@@ -516,13 +398,13 @@ export const api = {
   sale: (payload: any) =>
     request<any>('/pos/sale', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: payload,
     }),
 
   pricing: (variantId: string) =>
     request<any>('/pricing/calculate', {
       method: 'POST',
-      body: JSON.stringify({ variant_id: variantId }),
+      body: { variant_id: variantId },
     }),
 
   customerLookup: (phone: string) =>
@@ -537,7 +419,7 @@ export const api = {
   createCustomer: (payload: any) =>
     request<any>('/customers', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: payload,
     }),
 
   listSales: (params: Record<string, string | number | undefined>) => {
@@ -563,7 +445,7 @@ export const api = {
   returnSale: (payload: any) =>
     request<any>('/pos/return', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: payload,
     }),
 
   currentShift: (branchId: string) =>
@@ -590,17 +472,20 @@ export const api = {
       })
     }
 
-    const issued = await request<OfflineAccountingContext>(
-      `/shifts/${encodeURIComponent(shift.id)}/offline-context`,
-      { method: 'POST' },
+    const issued = unwrap(
+      await bold.api_issue_accounting(
+        shift.id,
+      ),
     )
-    if (!offlineAccountingContextMatches(issued, { session, device, shift })) {
+    if (!offlineAccountingSummaryMatches(
+      issued,
+      { session, device, shift },
+    )) {
       throw new ApiError({
         code: 'OFFLINE_ACCOUNTING_CONTEXT_INVALID',
         message_ar: 'أعاد الخادم تفويضًا لا يطابق الكاشير أو الجهاز أو الوردية الحالية.',
       })
     }
-    await bold.secure_set_accounting(issued)
     accountingContext = issued
     return issued
   },
@@ -610,16 +495,16 @@ export const api = {
   openShift: (branchId: string, openingCash: number) =>
     request<Shift>('/shifts/open', {
       method: 'POST',
-      body: JSON.stringify({
+      body: {
         branch_id: branchId,
         opening_cash: openingCash,
-      }),
+      },
     }),
 
   closeShift: (id: string, closingCash: number) =>
     request<Shift>(`/shifts/${encodeURIComponent(id)}/close`, {
       method: 'POST',
-      body: JSON.stringify({ closing_cash: closingCash }),
+      body: { closing_cash: closingCash },
     }),
 
   pull: (branchId: string, cursor?: string | null) =>
@@ -632,7 +517,7 @@ export const api = {
   heartbeat: (payload: any) =>
     request<any>('/terminals/heartbeat', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: payload,
     }),
 
   listReturns: (

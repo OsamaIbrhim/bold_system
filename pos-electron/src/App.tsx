@@ -9,6 +9,7 @@ import {
   SyncState,
 } from './types'
 import { startSync, syncLoop } from './sync'
+import { bold } from './electron'
 import { EnrollmentScreen } from './screens/EnrollmentScreen'
 import { LoginScreen } from './screens/LoginScreen'
 import { CloseShiftScreen, OpenShiftScreen } from './screens/ShiftScreens'
@@ -211,7 +212,23 @@ export default function App() {
     [installAccountingContext, notify],
   )
 
-  const requestShiftClose = useCallback(() => {
+  const requestShiftClose = useCallback(async () => {
+    try {
+      const heldSales = await bold.held_sales()
+      if (heldSales.length > 0) {
+        notify(
+          `لا يمكن إغلاق الوردية: توجد ${heldSales.length} فاتورة معلقة لهذا الكاشير. استكملها أو احذفها أولًا.`,
+          'error',
+        )
+        return
+      }
+    } catch (error) {
+      notify(
+        `تعذر التحقق من الفواتير المعلقة: ${(error as Error).message}`,
+        'error',
+      )
+      return
+    }
     if (syncState.pending_count > 0) {
       notify(
         `لا يمكن إغلاق الوردية: توجد ${syncState.pending_count} عملية محلية غير محسومة. نفّذ المزامنة أو راجع العملية الفاشلة أولًا.`,

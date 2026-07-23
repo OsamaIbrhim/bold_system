@@ -1,6 +1,11 @@
 -- This migration intentionally does not use an explicit transaction.
 -- PostgreSQL requires a newly added enum value to be committed before
 -- it can be referenced by later statements in the same migration.
+--
+-- Keep the DDL before the first data table resumable. Prisma/PostgreSQL can
+-- leave these statements committed when a later statement fails. Production
+-- recovery marks the failed migration rolled back and safely runs this file
+-- again.
 
 
 -- Problem 5: immutable transfer commands, explicit in-transit custody and
@@ -50,24 +55,45 @@ $$;
 
 ALTER TYPE "TransferStatus" ADD VALUE IF NOT EXISTS 'partially_received';
 
-CREATE TYPE "TransferCommandType" AS ENUM ('ship', 'receive', 'cancel');
-CREATE TYPE "TransferTransitMovementType" AS ENUM (
-  'shipped',
-  'received',
-  'damaged',
-  'missing',
-  'correction'
-);
+DO $$
+BEGIN
+  CREATE TYPE "TransferCommandType" AS ENUM ('ship', 'receive', 'cancel');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END
+$$;
+
+DO $$
+BEGIN
+  CREATE TYPE "TransferTransitMovementType" AS ENUM (
+    'shipped',
+    'received',
+    'damaged',
+    'missing',
+    'correction'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END
+$$;
 
 CREATE SEQUENCE IF NOT EXISTS "TransferNumberSequence" START 1;
 
 ALTER TABLE "Transfer"
-  ADD COLUMN "idempotency_key" VARCHAR(191),
-  ADD COLUMN "command_fingerprint" VARCHAR(64),
-  ADD COLUMN "cancelled_by" UUID,
-  ADD COLUMN "cancelled_at" TIMESTAMP(3),
-  ADD COLUMN "cancellation_reason" VARCHAR(500),
-  ADD COLUMN "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+  ADD COLUMN IF NOT EXISTS "idempotency_key" VARCHAR(191),
+  ADD COLUMN IF NOT EXISTS "command_fingerprint" VARCHAR(64),
+  ADD COLUMN IF NOT EXISTS "cancelled_by" UUID,
+  ADD COLUMN IF NOT EXISTS "cancelled_at" TIMESTAMP(3),
+  ADD COLUMN IF NOT EXISTS "cancellation_reason" VARCHAR(500),
+  ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMP(3) NOT NULL
+    DEFAULT CURRENT_TIMESTAMP;
+
+-- Remove the legacy deferred transfer-level inventory trigger before the
+-- metadata backfill below. Otherwise its pending events prevent PostgreSQL
+-- from running the subsequent ALTER TABLE statements in this migration.
+-- The trigger is replaced by the item-level custody trigger later in this file.
+DROP TRIGGER IF EXISTS "Transfer_inventory_movement" ON "Transfer";
+DROP FUNCTION IF EXISTS "record_transfer_inventory_movement"();
 
 UPDATE "Transfer"
 SET
@@ -88,56 +114,96 @@ SET
     ELSE NULL
   END;
 
-ALTER TABLE "Transfer"
-  ADD CONSTRAINT "Transfer_distinct_branches"
-    CHECK ("from_branch_id" <> "to_branch_id"),
-  ADD CONSTRAINT "Transfer_creation_identity"
-    CHECK (
-      (
-        "idempotency_key" IS NULL
-        AND "command_fingerprint" IS NULL
-      )
-      OR
-      (
-        "idempotency_key" IS NOT NULL
-        AND CHAR_LENGTH("idempotency_key") > 0
-        AND CHAR_LENGTH("command_fingerprint") = 64
-      )
-    ),
-  ADD CONSTRAINT "Transfer_cancellation_fields"
-    CHECK (
-      (
-        "status" = 'cancelled'
-        AND "cancelled_at" IS NOT NULL
-        AND "cancellation_reason" IS NOT NULL
-        AND CHAR_LENGTH(BTRIM("cancellation_reason")) > 0
-      )
-      OR
-      (
-        "status" <> 'cancelled'
-        AND "cancelled_by" IS NULL
-        AND "cancelled_at" IS NULL
-        AND "cancellation_reason" IS NULL
-      )
-    );
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'Transfer_distinct_branches'
+      AND conrelid = '"Transfer"'::regclass
+  ) THEN
+    ALTER TABLE "Transfer"
+      ADD CONSTRAINT "Transfer_distinct_branches"
+      CHECK ("from_branch_id" <> "to_branch_id");
+  END IF;
 
-CREATE INDEX "Transfer_status_updated_at_idx"
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'Transfer_creation_identity'
+      AND conrelid = '"Transfer"'::regclass
+  ) THEN
+    ALTER TABLE "Transfer"
+      ADD CONSTRAINT "Transfer_creation_identity"
+      CHECK (
+        (
+          "idempotency_key" IS NULL
+          AND "command_fingerprint" IS NULL
+        )
+        OR
+        (
+          "idempotency_key" IS NOT NULL
+          AND CHAR_LENGTH("idempotency_key") > 0
+          AND CHAR_LENGTH("command_fingerprint") = 64
+        )
+      );
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'Transfer_cancellation_fields'
+      AND conrelid = '"Transfer"'::regclass
+  ) THEN
+    ALTER TABLE "Transfer"
+      ADD CONSTRAINT "Transfer_cancellation_fields"
+      CHECK (
+        (
+          "status" = 'cancelled'
+          AND "cancelled_at" IS NOT NULL
+          AND "cancellation_reason" IS NOT NULL
+          AND CHAR_LENGTH(BTRIM("cancellation_reason")) > 0
+        )
+        OR
+        (
+          "status" <> 'cancelled'
+          AND "cancelled_by" IS NULL
+          AND "cancelled_at" IS NULL
+          AND "cancellation_reason" IS NULL
+        )
+      );
+  END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS "Transfer_status_updated_at_idx"
   ON "Transfer"("status", "updated_at");
 
-CREATE UNIQUE INDEX "Transfer_idempotency_key_key"
+CREATE UNIQUE INDEX IF NOT EXISTS "Transfer_idempotency_key_key"
   ON "Transfer"("idempotency_key")
   WHERE "idempotency_key" IS NOT NULL;
 
-ALTER TABLE "Transfer"
-  ADD CONSTRAINT "Transfer_cancelled_by_fkey"
-  FOREIGN KEY ("cancelled_by") REFERENCES "User"("id")
-  ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'Transfer_cancelled_by_fkey'
+      AND conrelid = '"Transfer"'::regclass
+  ) THEN
+    ALTER TABLE "Transfer"
+      ADD CONSTRAINT "Transfer_cancelled_by_fkey"
+      FOREIGN KEY ("cancelled_by") REFERENCES "User"("id")
+      ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END
+$$;
 
 ALTER TABLE "TransferItem"
-  ADD COLUMN "shipped_qty" INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN "received_qty" INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN "damaged_qty" INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN "missing_qty" INTEGER NOT NULL DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS "shipped_qty" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "received_qty" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "damaged_qty" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "missing_qty" INTEGER NOT NULL DEFAULT 0;
 
 UPDATE "TransferItem" item
 SET "shipped_qty" = item."qty"
@@ -151,23 +217,53 @@ FROM "Transfer" transfer
 WHERE transfer."id" = item."transfer_id"
   AND transfer."status" = 'received';
 
-ALTER TABLE "TransferItem"
-  ADD CONSTRAINT "TransferItem_qty_positive" CHECK ("qty" > 0),
-  ADD CONSTRAINT "TransferItem_shipped_qty_range"
-    CHECK ("shipped_qty" >= 0 AND "shipped_qty" <= "qty"),
-  ADD CONSTRAINT "TransferItem_resolution_nonnegative"
-    CHECK (
-      "received_qty" >= 0 AND "damaged_qty" >= 0 AND "missing_qty" >= 0
-    ),
-  ADD CONSTRAINT "TransferItem_resolution_not_above_shipped"
-    CHECK (
-      "received_qty" + "damaged_qty" + "missing_qty" <= "shipped_qty"
-    );
+-- TransferItem_qty_positive already exists from
+-- 20260719130000_transfer_integrity.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'TransferItem_shipped_qty_range'
+      AND conrelid = '"TransferItem"'::regclass
+  ) THEN
+    ALTER TABLE "TransferItem"
+      ADD CONSTRAINT "TransferItem_shipped_qty_range"
+      CHECK ("shipped_qty" >= 0 AND "shipped_qty" <= "qty");
+  END IF;
 
-CREATE UNIQUE INDEX "TransferItem_transfer_id_variant_id_key"
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'TransferItem_resolution_nonnegative'
+      AND conrelid = '"TransferItem"'::regclass
+  ) THEN
+    ALTER TABLE "TransferItem"
+      ADD CONSTRAINT "TransferItem_resolution_nonnegative"
+      CHECK (
+        "received_qty" >= 0 AND "damaged_qty" >= 0 AND "missing_qty" >= 0
+      );
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'TransferItem_resolution_not_above_shipped'
+      AND conrelid = '"TransferItem"'::regclass
+  ) THEN
+    ALTER TABLE "TransferItem"
+      ADD CONSTRAINT "TransferItem_resolution_not_above_shipped"
+      CHECK (
+        "received_qty" + "damaged_qty" + "missing_qty" <= "shipped_qty"
+      );
+  END IF;
+END
+$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "TransferItem_transfer_id_variant_id_key"
   ON "TransferItem"("transfer_id", "variant_id");
 
-CREATE TABLE "TransferCommand" (
+CREATE TABLE IF NOT EXISTS "TransferCommand" (
   "id" UUID NOT NULL,
   "transfer_id" UUID NOT NULL,
   "command_type" "TransferCommandType" NOT NULL,
@@ -193,10 +289,10 @@ CREATE TABLE "TransferCommand" (
     )
 );
 
-CREATE INDEX "TransferCommand_transfer_id_created_at_idx"
+CREATE INDEX IF NOT EXISTS "TransferCommand_transfer_id_created_at_idx"
   ON "TransferCommand"("transfer_id", "created_at");
 
-CREATE TABLE "TransferTransitMovement" (
+CREATE TABLE IF NOT EXISTS "TransferTransitMovement" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "sequence" BIGSERIAL NOT NULL,
   "transfer_id" UUID NOT NULL,
@@ -234,15 +330,12 @@ CREATE TABLE "TransferTransitMovement" (
     ON DELETE SET NULL ON UPDATE CASCADE
 );
 
-CREATE INDEX "TransferTransitMovement_transfer_sequence_idx"
+CREATE INDEX IF NOT EXISTS "TransferTransitMovement_transfer_sequence_idx"
   ON "TransferTransitMovement"("transfer_id", "sequence");
-CREATE INDEX "TransferTransitMovement_item_sequence_idx"
+CREATE INDEX IF NOT EXISTS "TransferTransitMovement_item_sequence_idx"
   ON "TransferTransitMovement"("transfer_item_id", "sequence");
-CREATE INDEX "TransferTransitMovement_variant_sequence_idx"
+CREATE INDEX IF NOT EXISTS "TransferTransitMovement_variant_sequence_idx"
   ON "TransferTransitMovement"("variant_id", "sequence");
-
-DROP TRIGGER IF EXISTS "Transfer_inventory_movement" ON "Transfer";
-DROP FUNCTION IF EXISTS "record_transfer_inventory_movement"();
 
 CREATE OR REPLACE FUNCTION "record_transfer_item_movements"()
 RETURNS TRIGGER
@@ -445,6 +538,8 @@ BEGIN
 END
 $$;
 
+DROP TRIGGER IF EXISTS "TransferItem_inventory_and_transit_movements"
+ON "TransferItem";
 CREATE CONSTRAINT TRIGGER "TransferItem_inventory_and_transit_movements"
 AFTER UPDATE OF "shipped_qty", "received_qty", "damaged_qty", "missing_qty"
 ON "TransferItem"
@@ -470,7 +565,8 @@ SELECT
   jsonb_build_object('source', '202607230002_transfer_state_machine')
 FROM "TransferItem" item
 JOIN "Transfer" transfer ON transfer."id" = item."transfer_id"
-WHERE item."shipped_qty" > 0;
+WHERE item."shipped_qty" > 0
+ON CONFLICT ("idempotency_key") DO NOTHING;
 
 INSERT INTO "TransferTransitMovement" (
   "transfer_id", "transfer_item_id", "variant_id", "movement_type",
@@ -490,7 +586,8 @@ SELECT
   jsonb_build_object('source', '202607230002_transfer_state_machine')
 FROM "TransferItem" item
 JOIN "Transfer" transfer ON transfer."id" = item."transfer_id"
-WHERE item."received_qty" > 0;
+WHERE item."received_qty" > 0
+ON CONFLICT ("idempotency_key") DO NOTHING;
 
 CREATE OR REPLACE FUNCTION "protect_transfer_posted_documents"()
 RETURNS TRIGGER
@@ -623,10 +720,13 @@ BEGIN
 END
 $$;
 
+DROP TRIGGER IF EXISTS "Transfer_protect_posted_document" ON "Transfer";
 CREATE TRIGGER "Transfer_protect_posted_document"
 BEFORE UPDATE OR DELETE ON "Transfer"
 FOR EACH ROW EXECUTE FUNCTION "protect_transfer_posted_documents"();
 
+DROP TRIGGER IF EXISTS "TransferItem_protect_posted_document"
+ON "TransferItem";
 CREATE TRIGGER "TransferItem_protect_posted_document"
 BEFORE UPDATE OR DELETE ON "TransferItem"
 FOR EACH ROW EXECUTE FUNCTION "protect_transfer_posted_documents"();
@@ -646,10 +746,13 @@ BEGIN
 END
 $$;
 
+DROP TRIGGER IF EXISTS "TransferCommand_append_only" ON "TransferCommand";
 CREATE TRIGGER "TransferCommand_append_only"
 BEFORE UPDATE OR DELETE ON "TransferCommand"
 FOR EACH ROW EXECUTE FUNCTION "protect_transfer_append_only_record"();
 
+DROP TRIGGER IF EXISTS "TransferTransitMovement_append_only"
+ON "TransferTransitMovement";
 CREATE TRIGGER "TransferTransitMovement_append_only"
 BEFORE UPDATE OR DELETE ON "TransferTransitMovement"
 FOR EACH ROW EXECUTE FUNCTION "protect_transfer_append_only_record"();

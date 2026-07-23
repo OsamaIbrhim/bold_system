@@ -6,31 +6,15 @@ export type User = {
 }
 
 export type Session = {
-  access_token: string
-  refresh_token: string
   user: User
 }
 
-
-export type OfflineAccountingContext = {
-  v: 1
-  purpose: 'pos-offline-accounting'
-  key_id: string
-  token: string
-  session_id: string
-  user_id: string
-  role: 'branch_manager' | 'cashier'
-  branch_id: string
-  terminal_id: string
-  shift_id: string
-  issued_at: string
-  expires_at: string
-  server_last_sale_sequence: string
-}
+export type {
+  OfflineAccountingSummary as OfflineAccountingContext,
+} from '../electron/offline-accounting'
 
 export type DeviceCredential = {
   device_id: string
-  device_token: string
   branch_id: string
   terminal_id: string
   terminal_code: string
@@ -153,12 +137,15 @@ export type SyncState = {
 
 export type AppView = 'register' | 'sales'
 
-export type SaleDraft = {
+export type HeldSale = {
   id: string
   customer: Customer | null
   items: CartItem[]
+  item_count: number
+  total: number
   created_at: string
   updated_at: string
+  resume_error?: string | null
 }
 
 export type ReturnRecord = {

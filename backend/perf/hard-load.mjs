@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import process from 'node:process'
 
 const api = process.env.PERF_API_URL || 'http://localhost:3000/api/v1'
-const smoke = process.env.PERF_SMOKE === '1'
+const smoke =
+  process.env.PERF_SMOKE === '1' || process.argv.includes('--smoke')
 
 function numericEnv(name, fallback, minimum = 0) {
   const value = Number(process.env[name] ?? fallback)

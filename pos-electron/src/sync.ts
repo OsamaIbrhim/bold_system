@@ -19,6 +19,33 @@ type SyncApi = Pick<
 >
 
 let activeSync: Promise<SyncState> | null = null
+const MAX_SYNC_PULL_PAGES = 100
+
+export class SyncIntegrityError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SyncIntegrityError'
+  }
+}
+
+function cursorTransitionIsValid(
+  current: string | null,
+  next: string | null,
+  hasMore: boolean,
+) {
+  if (next === null) return false
+  try {
+    const nextValue = BigInt(next)
+    if (nextValue < 0n) return false
+    if (current === null) return !hasMore
+    const currentValue = BigInt(current)
+    return hasMore
+      ? nextValue > currentValue
+      : nextValue >= currentValue
+  } catch {
+    return false
+  }
+}
 
 function errorMessage(error: unknown) {
   return error instanceof Error
@@ -29,6 +56,7 @@ function errorMessage(error: unknown) {
 }
 
 export function isRetryableSyncError(error: unknown) {
+  if (error instanceof SyncIntegrityError) return false
   if (error instanceof SyntaxError) return false
   if (!(error instanceof ApiError)) return true
   if (error.code === 'NETWORK_ERROR') return true
@@ -180,20 +208,50 @@ export async function performSync(
   let response: any
   let pages = 0
 
-  do {
+  while (true) {
     response = await client.pull(
       branchId,
       cursor,
     )
 
-    await local.sync_apply_pull(response)
+    const nextCursor =
+      response.cursor === undefined ||
+      response.cursor === null
+        ? cursor
+        : String(response.cursor)
 
-    cursor = response.cursor ?? cursor
+    if (
+      !cursorTransitionIsValid(
+        cursor,
+        nextCursor,
+        !!response.has_more,
+      )
+    ) {
+      throw new SyncIntegrityError(
+        'أوقف POS المزامنة لأن الخادم أعاد cursor غير صالح أو غير متقدم.',
+      )
+    }
+
+    // A multi-page delta is not safe for checkout until every page is
+    // committed. Clearing catalog validity on intermediate pages makes that
+    // invariant durable across crashes and process restarts.
+    await local.sync_apply_pull({
+      ...response,
+      catalog_valid_until:
+        response.has_more
+          ? null
+          : response.catalog_valid_until,
+    })
+
+    cursor = nextCursor
     pages += 1
-  } while (
-    response.has_more &&
-    pages < 10
-  )
+    if (!response.has_more) break
+    if (pages >= MAX_SYNC_PULL_PAGES) {
+      throw new SyncIntegrityError(
+        `أوقف POS المزامنة بعد ${MAX_SYNC_PULL_PAGES} صفحة لحماية الكتالوج من دورة غير منتهية.`,
+      )
+    }
+  }
 
   const completed: SyncState = {
     ...state,
@@ -230,15 +288,19 @@ export function syncLoop(
       const previous =
         await bold.sync_get_status()
 
-      const offline: SyncState = {
+      const retryable =
+        isRetryableSyncError(error)
+      const failed: SyncState = {
         ...previous,
-        sync_status: 'offline',
+        sync_status: retryable
+          ? 'offline'
+          : 'error',
         last_error: errorMessage(error),
       }
 
-      await bold.sync_set_status(offline)
+      await bold.sync_set_status(failed)
 
-      return offline
+      return failed
     })
     .then(state => {
       onStatus?.(state)

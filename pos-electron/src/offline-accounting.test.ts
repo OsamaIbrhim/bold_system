@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   isValidOfflineAccountingContext,
+  isValidOfflineAccountingSummary,
   maxTerminalSequence,
   nextTerminalSequence,
   offlineAccountingContextMatches,
+  offlineAccountingSummaryMatches,
   parseTerminalSequence,
+  toOfflineAccountingSummary,
 } from '../electron/offline-accounting'
 
 const now = Date.parse('2026-07-22T10:00:00.000Z')
@@ -66,6 +69,22 @@ describe('offline accounting context', () => {
         now,
       ),
     ).toBe(false)
+  })
+
+  it('exposes only a non-secret authorization summary to the renderer', () => {
+    const summary = toOfflineAccountingSummary(context)
+    expect(summary).not.toHaveProperty('token')
+    expect(summary.authorized).toBe(true)
+    expect(
+      isValidOfflineAccountingSummary(summary, now),
+    ).toBe(true)
+    expect(
+      offlineAccountingSummaryMatches(
+        summary,
+        expected,
+        now,
+      ),
+    ).toBe(true)
   })
 
   it('uses exact decimal bigint sequencing without JavaScript number precision loss', () => {

@@ -8,6 +8,10 @@ on:
   schedule:
     - cron: '30 1 * * *'
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -36,6 +40,102 @@ jobs:
       - run: npx prisma validate
       - run: npm run test:soft
       - run: npm audit --audit-level=high
+
+  migration-gate:
+    name: migration-gate
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bold_migrations
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bold_migrations"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      JWT_SECRET: ci-only-secret-that-is-longer-than-thirty-two-characters
+      PRICE_SNAPSHOT_KEYS: price-ci-202607=8a93d2f15b7c4e609d2a8f3c6e1b75049c2d8e6f1a7b3905d4c8e2f6a1b7d903
+      POS_OFFLINE_TICKET_KEYS: offline-ci-202607=4f7b1d8e93c2a6507d4e9f1b6c8a3052e7d9b4f1c6a8e2035d7f9b2c4a6e8013
+      ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
+      ALLOW_REMOTE_DEVELOPMENT_ACCOUNTING_RESET: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.11
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Resolve exact migration baselines
+        id: refs
+        env:
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base_sha="$EVENT_BASE_SHA"
+          if [ -z "$base_sha" ] || [ "$base_sha" = "0000000000000000000000000000000000000000" ]; then
+            base_sha="$(git rev-parse HEAD^)"
+          fi
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+      - name: Enforce immutable forward-only migrations
+        id: policy
+        run: >-
+          npm run prisma:migrations:policy --
+          --base "${{ steps.refs.outputs.base_sha }}"
+          --github-output "$GITHUB_OUTPUT"
+      - name: Apply current migrations to a clean database twice
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean_shadow
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+          npx prisma migrate deploy
+          npx prisma migrate status
+          npx prisma migrate diff --exit-code \
+            --from-migrations prisma/migrations \
+            --to-url "$DIRECT_URL" \
+            --shadow-database-url "$SHADOW_DATABASE_URL"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.policy.outputs.upgrade_ref }}
+          path: migration-base
+      - name: Build a populated database from the release baseline
+        working-directory: migration-base/backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
+        run: |
+          npm ci
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run prisma:seed
+      - name: Upgrade populated release data with current migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade_shadow
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+          npx prisma migrate deploy
+          npx prisma migrate status
+          npx prisma migrate diff --exit-code \
+            --from-migrations prisma/migrations \
+            --to-url "$DIRECT_URL" \
+            --shadow-database-url "$SHADOW_DATABASE_URL"
 
   admin:
     runs-on: ubuntu-latest
@@ -70,6 +170,7 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
 
   hard-smoke:
+    needs: migration-gate
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -114,12 +215,37 @@ jobs:
         run: |
           npm run start:prod > /tmp/bold-api.log 2>&1 &
           for attempt in {1..30}; do
-            curl --silent --fail http://localhost:3000/api/docs >/dev/null && exit 0
+            curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null && exit 0
             sleep 1
           done
           cat /tmp/bold-api.log
           exit 1
       - run: npm run test:hard:smoke
+
+  release-gate:
+    name: release-gate
+    if: always() && github.event_name != 'schedule'
+    needs:
+      - backend
+      - migration-gate
+      - admin
+      - pos
+      - hard-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every production gate
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          MIGRATION_RESULT: ${{ needs.migration-gate.result }}
+          ADMIN_RESULT: ${{ needs.admin.result }}
+          POS_RESULT: ${{ needs.pos.result }}
+          HARD_SMOKE_RESULT: ${{ needs.hard-smoke.result }}
+        run: |
+          test "$BACKEND_RESULT" = "success"
+          test "$MIGRATION_RESULT" = "success"
+          test "$ADMIN_RESULT" = "success"
+          test "$POS_RESULT" = "success"
+          test "$HARD_SMOKE_RESULT" = "success"
 
   hard-load:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -177,7 +303,7 @@ jobs:
         run: |
           npm run start:prod > /tmp/bold-api.log 2>&1 &
           for attempt in {1..30}; do
-            curl --silent --fail http://localhost:3000/api/docs >/dev/null && exit 0
+            curl --silent --fail http://localhost:3000/api/v1/health/ready >/dev/null && exit 0
             sleep 1
           done
           cat /tmp/bold-api.log
