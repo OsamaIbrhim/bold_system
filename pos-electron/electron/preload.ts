@@ -17,11 +17,18 @@ contextBridge.exposeInMainWorld('bold', {
   sync_apply_pull: (data: any) => ipcRenderer.invoke('sync:apply_pull', data),
   sync_get_status: () => ipcRenderer.invoke('sync:get_status'),
   sync_set_status: (status: any) => ipcRenderer.invoke('sync:set_status', status),
-  secure_get: () => ipcRenderer.invoke('secure:get'),
-  secure_set_auth: (auth: any) => ipcRenderer.invoke('secure:set_auth', auth),
-  secure_set_device: (device: any) => ipcRenderer.invoke('secure:set_device', device),
-  secure_set_accounting: (context: any) =>
-    ipcRenderer.invoke('secure:set_accounting', context),
+  api_bootstrap: () => ipcRenderer.invoke('api:bootstrap'),
+  api_enroll: (code: string, terminal: any) =>
+    ipcRenderer.invoke('api:enroll', code, terminal),
+  api_login: (phone: string, password: string) =>
+    ipcRenderer.invoke('api:login', phone, password),
+  api_logout: () => ipcRenderer.invoke('api:logout'),
+  api_request: (request: any) => ipcRenderer.invoke('api:request', request),
+  api_clear_session: () => ipcRenderer.invoke('api:clear_session'),
+  api_clear_device: () => ipcRenderer.invoke('api:clear_device'),
+  api_issue_accounting: (shiftId: string) =>
+    ipcRenderer.invoke('api:issue_accounting', shiftId),
+  api_clear_accounting: () => ipcRenderer.invoke('api:clear_accounting'),
 })
 
 declare global {

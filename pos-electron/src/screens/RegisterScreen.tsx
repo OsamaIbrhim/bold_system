@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../api'
 import { bold } from '../electron'
 import { CartItem, Customer, DeviceCredential, OfflineAccountingContext, Product, Session, Shift, SyncState } from '../types'
-import { offlineAccountingContextMatches } from '../../electron/offline-accounting'
+import { offlineAccountingSummaryMatches } from '../../electron/offline-accounting'
 import { ConfirmDialog, FieldError, Modal, NumericKeypad } from '../components/ui'
 import { cartTotals, isValidEgyptianPhone, money, normalizeEgyptianPhone, paymentLabel, readHeldSales, removeHeldSale, saveHeldSale } from '../utils'
 
@@ -39,7 +39,7 @@ export function RegisterScreen({
   const [completed,setCompleted]=useState<any>(null)
   const searchRef=useRef<HTMLInputElement | null>(null)
   const totals=useMemo(()=>cartTotals(cart),[cart])
-  const accountingReady=offlineAccountingContextMatches(
+  const accountingReady=offlineAccountingSummaryMatches(
     accountingContext,
     {session,device,shift},
   )
@@ -194,17 +194,18 @@ function CheckoutModal({open,items,customer,session,device,shift,accountingConte
   const [received,setReceived]=useState('')
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState('')
-  useEffect(()=>{if(open){setMethod('cash');setReceived('');setBusy(false);setError('')}},[open])
+  const paymentLock=useRef(false)
+  useEffect(()=>{if(open){paymentLock.current=false;setMethod('cash');setReceived('');setBusy(false);setError('')}},[open])
   const receivedValue=Number(received||0),change=Math.max(0,receivedValue-totals.total)
   const confirm=async()=>{
-    if(busy)return
-    if(!offlineAccountingContextMatches(accountingContext,{session,device,shift})){setError('انتهى أو تغير تفويض الكاشير والوردية. أغلق شاشة الدفع وشغّل الإنترنت لتجديده.');return}
+    if(paymentLock.current||busy)return
+    if(!offlineAccountingSummaryMatches(accountingContext,{session,device,shift})){setError('انتهى أو تغير تفويض الكاشير والوردية. أغلق شاشة الدفع وشغّل الإنترنت لتجديده.');return}
     if(!catalogIsFresh(catalogValidUntil)){setError('انتهت صلاحية كتالوج الأسعار. أغلق شاشة الدفع ونفّذ مزامنة.');return}
     if(items.some((item)=>!hasSignedPrice(item))){setError('تحتوي الفاتورة على سعر غير موقع. أعد إضافة الصنف بعد المزامنة.');return}
     if(method==='cash'&&receivedValue<totals.total){setError('المبلغ المستلم أقل من إجمالي الفاتورة.');return}
     const phone=customer?.phone?normalizeEgyptianPhone(customer.phone):''
     if(phone&&!isValidEgyptianPhone(phone)){setError('رقم العميل غير صحيح. صححه أو أزل العميل من الفاتورة.');return}
-    setBusy(true);setError('')
+    paymentLock.current=true;setBusy(true);setError('')
     const payload={sync_id:crypto.randomUUID(),branch_id:branchId,customer_phone:phone||undefined,items:items.map((item)=>({variant_id:item.variant_id,qty:item.qty,unit_price:item.unit_price,unit_tax:item.unit_tax,price_version:item.price_version,price_token:item.price_token})),payment_method:method,language:'ar',local_total:totals.total}
     try{
       const saved=await bold.sale(payload)
@@ -213,7 +214,7 @@ function CheckoutModal({open,items,customer,session,device,shift,accountingConte
       const printResult=await bold.print(receipt,'ar').catch((printError)=>({ok:false,reason:(printError as Error).message}))
       onCompleted({...receipt,sync_id:saved.sync_id,printed:!!printResult?.ok,print_error:printResult?.reason})
       notify('تم حفظ البيع محليًا بأمان','success')
-    }catch(err){const value=err as Error;setError(value.message||'تعذر حفظ البيع محليًا');setBusy(false)}
+    }catch(err){paymentLock.current=false;const value=err as Error;setError(value.message||'تعذر حفظ البيع محليًا');setBusy(false)}
   }
   return <Modal open={open} title="إتمام الدفع" onClose={()=>{if(!busy)onClose()}} width="920px"><div className="checkout-layout"><section><div className="checkout-total"><span>المبلغ المطلوب</span><b>{money(totals.total)} ج</b><small>{totals.quantity} قطعة · ضريبة {money(totals.tax)} ج</small></div><div className="payment-methods">{paymentMethods.map((value)=><button key={value} className={method===value?'active':''} onClick={()=>setMethod(value)}>{paymentLabel(value)}</button>)}</div>{method==='cash'&&<><label>المبلغ المستلم</label><div className="money-input"><input dir="ltr" inputMode="decimal" value={received} onChange={(event)=>setReceived(event.target.value)} autoFocus/><span>ج.م</span></div><div className="cash-presets"><button onClick={()=>setReceived(String(totals.total))}>المبلغ بالضبط</button>{[50,100,200,500,1000].filter((value)=>value>=totals.total).slice(0,4).map((value)=><button key={value} onClick={()=>setReceived(String(value))}>{value}</button>)}</div><div className="change-row"><span>الباقي للعميل</span><b>{money(change)} ج</b></div></>}<FieldError>{error}</FieldError></section>{method==='cash'&&<NumericKeypad value={received} onChange={setReceived}/>}</div><div className="dialog-actions"><button className="button secondary" disabled={busy} onClick={onClose}>رجوع</button><button className="button primary xl" disabled={busy} onClick={confirm}>{busy?'جارٍ حفظ البيع…':`تأكيد ${paymentLabel(method)}`}</button></div></Modal>
 }

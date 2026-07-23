@@ -64,13 +64,34 @@ export type BoldBridge = {
     status: Partial<SyncState>,
   ): Promise<{ ok: boolean }>
 
-  secure_get(): Promise<any>
-  secure_set_auth(auth: unknown): Promise<{ ok: boolean }>
-  secure_set_device(device: unknown): Promise<{ ok: boolean }>
-  secure_set_accounting(
-    context: OfflineAccountingContext | null,
-  ): Promise<{ ok: boolean }>
+  api_bootstrap(): Promise<IpcEnvelope<any>>
+  api_enroll(code: string, terminal: unknown): Promise<IpcEnvelope<any>>
+  api_login(phone: string, password: string): Promise<IpcEnvelope<any>>
+  api_logout(): Promise<IpcEnvelope<any>>
+  api_request(request: {
+    path: string
+    method?: string
+    body?: unknown
+  }): Promise<IpcEnvelope<any>>
+  api_clear_session(): Promise<IpcEnvelope<any>>
+  api_clear_device(): Promise<IpcEnvelope<any>>
+  api_issue_accounting(shiftId: string): Promise<IpcEnvelope<any>>
+  api_clear_accounting(): Promise<IpcEnvelope<any>>
 }
+
+export type IpcEnvelope<T> =
+  | { ok: true; data: T }
+  | {
+      ok: false
+      error: {
+        message: string
+        code: string
+        field?: string
+        request_id?: string
+        status?: number
+        details?: string[]
+      }
+    }
 
 function resolveBridge(): BoldBridge {
   const runtimeWindow = (

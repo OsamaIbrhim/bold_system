@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   SIGNED_CATALOG_FORMAT_VERSION,
+  isValidCatalogStock,
   isValidSignedCatalogProduct,
   requiresFullCatalogRefresh,
   signedPriceTokenKeyId,
@@ -70,6 +71,27 @@ describe('versioned signed local catalog migration', () => {
         price_version: '',
         price_token: '',
         price_issued_at: '',
+      }),
+    ).toBe(false)
+  })
+
+  it('rejects malformed or negative synchronized stock', () => {
+    expect(
+      isValidCatalogStock({
+        variant_id: 'variant-1',
+        qty_on_hand: '12',
+      }),
+    ).toBe(true)
+    expect(
+      isValidCatalogStock({
+        variant_id: 'variant-1',
+        qty_on_hand: -1,
+      }),
+    ).toBe(false)
+    expect(
+      isValidCatalogStock({
+        variant_id: '',
+        qty_on_hand: 1,
       }),
     ).toBe(false)
   })

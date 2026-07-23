@@ -11,6 +11,11 @@ export type SignedCatalogProduct = {
   price_issued_at?: unknown
 }
 
+export type CatalogStock = {
+  variant_id?: unknown
+  qty_on_hand?: unknown
+}
+
 function nonEmptyString(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -41,6 +46,17 @@ export function isValidSignedCatalogProduct(
     !!signedPriceTokenKeyId(product.price_token) &&
     nonEmptyString(product.price_issued_at) &&
     Number.isFinite(new Date(String(product.price_issued_at)).getTime())
+  )
+}
+
+export function isValidCatalogStock(
+  stock: CatalogStock,
+) {
+  const quantity = Number(stock.qty_on_hand)
+  return (
+    nonEmptyString(stock.variant_id) &&
+    Number.isInteger(quantity) &&
+    quantity >= 0
   )
 }
 

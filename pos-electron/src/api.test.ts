@@ -11,7 +11,6 @@ describe('POS secure startup state', () => {
     expect(
       validDevice({
         device_id: 'device-1',
-        device_token: 'token',
         branch_id: 'undefined',
         terminal_id: 'terminal',
         terminal_code: 'POS-1',
@@ -21,10 +20,9 @@ describe('POS secure startup state', () => {
     expect(
       validAuth({
         session: {
-          access_token: 'a',
-          refresh_token: 'r',
           user: { id: 'u', branch_id: 'undefined' },
         },
+        offline_valid_until: '2026-07-23T12:00:00.000Z',
       }),
     ).toBe(false)
   })
@@ -35,7 +33,7 @@ describe('POS secure startup state', () => {
       v: 1,
       purpose: 'pos-offline-accounting',
       key_id: 'offline-2026',
-      token: 'offline-2026.payload.signature',
+      authorized: true,
       session_id: 'session-1',
       user_id: 'user-1',
       role: 'cashier',
@@ -71,7 +69,6 @@ describe('POS secure startup state', () => {
     expect(
       validDevice({
         device_id: 'device-1',
-        device_token: 'token',
         branch_id: 'branch-1',
         terminal_id: 'terminal-1',
         terminal_code: 'POS-1',
@@ -81,8 +78,6 @@ describe('POS secure startup state', () => {
     expect(
       validAuth({
         session: {
-          access_token: 'access',
-          refresh_token: 'refresh',
           user: { id: 'user-1', branch_id: 'branch-1' },
         },
         offline_valid_until: '2026-07-20T00:00:00.000Z',
