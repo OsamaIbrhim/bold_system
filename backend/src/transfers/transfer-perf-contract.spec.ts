@@ -96,6 +96,27 @@ describe('transfer performance fixture contract', () => {
     );
   });
 
+  it('verifies transfer ledger entries by stable reference identity', () => {
+    const inventoryLedgerSmoke = readFileSync(
+      join(perfDirectory, 'inventory-ledger-smoke.mjs'),
+      'utf8',
+    );
+
+    expect(inventoryLedgerSmoke).toContain(
+      'async function findSingleTransferMovement',
+    );
+    expect(inventoryLedgerSmoke).toContain("reference_type: 'Transfer'");
+    expect(inventoryLedgerSmoke).toContain('reference_id: transferId');
+    expect(inventoryLedgerSmoke).toContain(
+      'reference_line_id: transferItemId',
+    );
+    expect(inventoryLedgerSmoke).toContain("movementType: 'transfer_out'");
+    expect(inventoryLedgerSmoke).toContain("movementType: 'transfer_in'");
+    expect(inventoryLedgerSmoke).not.toMatch(
+      /idempotency_key:\s*`transfer-(?:out|in):/,
+    );
+  });
+
   it('runs every hard suite and reports all failures in one pass', () => {
     const packageJson = JSON.parse(
       readFileSync(join(process.cwd(), 'package.json'), 'utf8'),

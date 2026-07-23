@@ -61,6 +61,26 @@ async function assertReconciled(tx, branchId, variantId) {
   )
 }
 
+async function findSingleTransferMovement(
+  tx,
+  { movementType, transferId, transferItemId },
+) {
+  const movements = await tx.inventoryMovement.findMany({
+    where: {
+      movement_type: movementType,
+      reference_type: 'Transfer',
+      reference_id: transferId,
+      reference_line_id: transferItemId,
+    },
+    take: 2,
+  })
+  invariant(
+    movements.length === 1,
+    `Expected one ${movementType} movement for transfer item ${transferItemId}, found ${movements.length}`,
+  )
+  return movements[0]
+}
+
 let summary
 try {
   await prisma.$transaction(
@@ -332,13 +352,13 @@ try {
         items: [{ id: transfer.items[0].id, quantity: 1 }],
       })
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE')
-      const transferOutMovement = await tx.inventoryMovement.findUnique({
-        where: {
-          idempotency_key: `transfer-out:${transfer.items[0].id}`,
-        },
+      const transferOutMovement = await findSingleTransferMovement(tx, {
+        movementType: 'transfer_out',
+        transferId: transfer.id,
+        transferItemId: transfer.items[0].id,
       })
       invariant(
-        transferOutMovement?.on_hand_delta === -1,
+        transferOutMovement.on_hand_delta === -1,
         'Transfer-out movement was not recorded',
       )
 
@@ -358,13 +378,13 @@ try {
         items: [{ id: transfer.items[0].id, received: 1 }],
       })
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE')
-      const transferInMovement = await tx.inventoryMovement.findUnique({
-        where: {
-          idempotency_key: `transfer-in:${transfer.items[0].id}`,
-        },
+      const transferInMovement = await findSingleTransferMovement(tx, {
+        movementType: 'transfer_in',
+        transferId: transfer.id,
+        transferItemId: transfer.items[0].id,
       })
       invariant(
-        transferInMovement?.on_hand_delta === 1,
+        transferInMovement.on_hand_delta === 1,
         'Transfer-in movement was not recorded',
       )
 
