@@ -38,7 +38,7 @@ describe('transfer state migration contract', () => {
     const dropLegacyTrigger = migration.indexOf(
       'DROP TRIGGER IF EXISTS "Transfer_inventory_movement"',
     );
-    const transferBackfill = migration.indexOf('UPDATE "Transfer"\nSET');
+    const transferBackfill = migration.search(/UPDATE "Transfer"\r?\nSET/);
     const firstTransferConstraint = migration.indexOf(
       'ADD CONSTRAINT "Transfer_distinct_branches"',
     );
@@ -97,7 +97,7 @@ describe('transfer state migration contract', () => {
     );
 
     expect(packageJson.scripts['test:hard:smoke']).toContain(
-      'hard-load.mjs --smoke',
+      'run-hard-suite.mjs --smoke',
     );
     expect(packageJson.scripts['test:hard:smoke']).not.toContain(
       'PERF_SMOKE=1',

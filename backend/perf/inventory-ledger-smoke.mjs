@@ -1,5 +1,10 @@
 import { PrismaClient } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
+import {
+  enableTransferCommandContext,
+  markTransferFixtureShipped,
+  resolveTransferFixtureReceipt,
+} from './support/transfer-command-context.mjs'
 
 const prisma = new PrismaClient()
 
@@ -56,10 +61,32 @@ async function assertReconciled(tx, branchId, variantId) {
   )
 }
 
+async function findSingleTransferMovement(
+  tx,
+  { movementType, transferId, transferItemId },
+) {
+  const movements = await tx.inventoryMovement.findMany({
+    where: {
+      movement_type: movementType,
+      reference_type: 'Transfer',
+      reference_id: transferId,
+      reference_line_id: transferItemId,
+    },
+    take: 2,
+  })
+  invariant(
+    movements.length === 1,
+    `Expected one ${movementType} movement for transfer item ${transferItemId}, found ${movements.length}`,
+  )
+  return movements[0]
+}
+
 let summary
 try {
   await prisma.$transaction(
     async (tx) => {
+      await enableTransferCommandContext(tx)
+
       let sourceStock = await tx.inventoryStock.findFirst({
         where: {
           branch: { is_active: true },
@@ -311,14 +338,6 @@ try {
       })
 
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED')
-      await tx.transfer.update({
-        where: { id: transfer.id },
-        data: {
-          status: 'shipped',
-          shipped_by: actor.id,
-          shipped_at: new Date(),
-        },
-      })
       const transferOutChanged = await tx.$executeRaw`
         UPDATE "InventoryStock"
         SET "qty_on_hand" = "qty_on_hand" - 1
@@ -327,26 +346,23 @@ try {
           AND ("qty_on_hand" - "qty_reserved") >= 1
       `
       invariant(transferOutChanged === 1, 'Unable to apply transfer-out stock change')
+      await markTransferFixtureShipped(tx, {
+        transferId: transfer.id,
+        actorId: actor.id,
+        items: [{ id: transfer.items[0].id, quantity: 1 }],
+      })
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE')
-      const transferOutMovement = await tx.inventoryMovement.findUnique({
-        where: {
-          idempotency_key: `transfer-out:${transfer.items[0].id}`,
-        },
+      const transferOutMovement = await findSingleTransferMovement(tx, {
+        movementType: 'transfer_out',
+        transferId: transfer.id,
+        transferItemId: transfer.items[0].id,
       })
       invariant(
-        transferOutMovement?.on_hand_delta === -1,
+        transferOutMovement.on_hand_delta === -1,
         'Transfer-out movement was not recorded',
       )
 
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED')
-      await tx.transfer.update({
-        where: { id: transfer.id },
-        data: {
-          status: 'received',
-          received_by: actor.id,
-          received_at: new Date(),
-        },
-      })
       await tx.inventoryStock.update({
         where: {
           branch_id_variant_id: {
@@ -356,14 +372,19 @@ try {
         },
         data: { qty_on_hand: { increment: 1 } },
       })
+      await resolveTransferFixtureReceipt(tx, {
+        transferId: transfer.id,
+        actorId: actor.id,
+        items: [{ id: transfer.items[0].id, received: 1 }],
+      })
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE')
-      const transferInMovement = await tx.inventoryMovement.findUnique({
-        where: {
-          idempotency_key: `transfer-in:${transfer.items[0].id}`,
-        },
+      const transferInMovement = await findSingleTransferMovement(tx, {
+        movementType: 'transfer_in',
+        transferId: transfer.id,
+        transferItemId: transfer.items[0].id,
       })
       invariant(
-        transferInMovement?.on_hand_delta === 1,
+        transferInMovement.on_hand_delta === 1,
         'Transfer-in movement was not recorded',
       )
 

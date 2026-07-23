@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { PrismaClient, Prisma } from '@prisma/client'
+import {
+  enableTransferCommandContext,
+  markTransferFixtureShipped,
+  resolveTransferFixtureReceipt,
+} from './support/transfer-command-context.mjs'
 
 const prisma = new PrismaClient()
 const rollback = Symbol('rollback')
@@ -7,7 +12,7 @@ const rollback = Symbol('rollback')
 try {
   await prisma.$transaction(
     async (tx) => {
-      await tx.$queryRaw`SELECT set_config('bold.transfer_command', 'on', true)`
+      await enableTransferCommandContext(tx)
 
       const actor = await tx.user.findFirst({
         where: { role: { in: ['owner', 'warehouse_manager'] }, is_active: true },
@@ -79,18 +84,11 @@ try {
         WHERE "branch_id" = ${source.id}::uuid
           AND "variant_id" = ${stock.variant_id}::uuid
       `
-      await tx.$executeRaw`
-        UPDATE "Transfer"
-        SET "status" = 'shipped'::"TransferStatus",
-            "shipped_by" = ${actor.id}::uuid,
-            "shipped_at" = CURRENT_TIMESTAMP
-        WHERE "id" = ${transferId}::uuid
-      `
-      await tx.$executeRaw`
-        UPDATE "TransferItem"
-        SET "shipped_qty" = 3
-        WHERE "id" = ${itemId}::uuid
-      `
+      await markTransferFixtureShipped(tx, {
+        transferId,
+        actorId: actor.id,
+        items: [{ id: itemId, quantity: 3 }],
+      })
 
       await tx.$executeRaw`
         UPDATE "InventoryStock"
@@ -98,18 +96,11 @@ try {
         WHERE "branch_id" = ${destination.id}::uuid
           AND "variant_id" = ${stock.variant_id}::uuid
       `
-      await tx.$executeRaw`
-        UPDATE "Transfer"
-        SET "status" = 'received'::"TransferStatus",
-            "received_by" = ${actor.id}::uuid,
-            "received_at" = CURRENT_TIMESTAMP
-        WHERE "id" = ${transferId}::uuid
-      `
-      await tx.$executeRaw`
-        UPDATE "TransferItem"
-        SET "received_qty" = 2, "missing_qty" = 1
-        WHERE "id" = ${itemId}::uuid
-      `
+      await resolveTransferFixtureReceipt(tx, {
+        transferId,
+        actorId: actor.id,
+        items: [{ id: itemId, received: 2, missing: 1 }],
+      })
       await tx.$executeRawUnsafe(
         'SET CONSTRAINTS "TransferItem_inventory_and_transit_movements" IMMEDIATE',
       )

@@ -78,6 +78,21 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      - name: Create isolated migration databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for database in \
+            bold_migrations_clean \
+            bold_migrations_clean_shadow \
+            bold_migrations_upgrade \
+            bold_migrations_upgrade_shadow
+          do
+            createdb \
+              --host localhost \
+              --username postgres \
+              "$database"
+          done
       - name: Resolve exact migration baselines
         id: refs
         env:
@@ -96,9 +111,9 @@ jobs:
           --github-output "$GITHUB_OUTPUT"
       - name: Apply current migrations to a clean database twice
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=clean_shadow
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_clean_shadow
         run: |
           npx prisma generate
           npx prisma migrate deploy
@@ -115,8 +130,8 @@ jobs:
       - name: Build a populated database from the release baseline
         working-directory: migration-base/backend
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
         run: |
           npm ci
           npx prisma generate
@@ -124,9 +139,9 @@ jobs:
           npm run prisma:seed
       - name: Upgrade populated release data with current migrations
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations?schema=upgrade_shadow
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bold_migrations_upgrade_shadow
         run: |
           npx prisma generate
           npx prisma migrate deploy
@@ -197,7 +212,8 @@ jobs:
       POS_OFFLINE_TICKET_KEYS: offline-ci-202607=4f7b1d8e93c2a6507d4e9f1b6c8a3052e7d9b4f1c6a8e2035d7f9b2c4a6e8013
       POS_OFFLINE_TICKET_TTL_MS: 86400000
       POS_OFFLINE_CLOCK_SKEW_MS: 300000
-      PERF_LOGIN_PHONE: +200100000000
+      ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
+      PERF_LOGIN_PHONE: "+200100000000"
       PERF_LOGIN_PASSWORD: Bold1234
       PERF_SMOKE: 1
     steps:
@@ -275,7 +291,8 @@ jobs:
       POS_OFFLINE_TICKET_KEYS: offline-ci-202607=4f7b1d8e93c2a6507d4e9f1b6c8a3052e7d9b4f1c6a8e2035d7f9b2c4a6e8013
       POS_OFFLINE_TICKET_TTL_MS: 86400000
       POS_OFFLINE_CLOCK_SKEW_MS: 300000
-      PERF_LOGIN_PHONE: +200100000000
+      ALLOW_DEVELOPMENT_ACCOUNTING_RESET: reset-development-accounting
+      PERF_LOGIN_PHONE: "+200100000000"
       PERF_LOGIN_PASSWORD: Bold1234
       PERF_CONCURRENCY: 25
       PERF_REQUESTS_PER_WORKER: 20
@@ -285,7 +302,7 @@ jobs:
       PERF_MUTATIONS: 1
       PERF_SALES: 100
       PERF_SALE_P95_MS: 500
-      PERF_CASHIER_PHONE: +200100000002
+      PERF_CASHIER_PHONE: "+200100000002"
       PERF_CASHIER_PASSWORD: Bold1234
     steps:
       - uses: actions/checkout@v4
