@@ -1,7 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
-import { CreateUserDto } from './dto/create-user.dto';
+import { CreateUserDto, EGYPTIAN_MOBILE_PATTERN } from './dto/create-user.dto';
 @Injectable()
 export class UsersService {
   constructor(private prisma: PrismaService) {}
@@ -21,10 +21,17 @@ export class UsersService {
     });
   }
   async create(data: CreateUserDto) {
+    const phone = typeof data.phone === 'string'
+      ? data.phone.replace(/\s+/g, '')
+      : '';
+    if (!EGYPTIAN_MOBILE_PATTERN.test(phone)) {
+      throw new BadRequestException('phone must be a valid Egyptian mobile number');
+    }
+
     const { password, ...rest } = data;
     const password_hash = await bcrypt.hash(password, 12);
     return this.prisma.user.create({
-      data: { ...rest, password_hash },
+      data: { ...rest, phone, password_hash },
       select: {
         id: true,
         branch_id: true,
