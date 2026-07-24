@@ -14,6 +14,7 @@ export const NAV_ITEMS = [
   { href: '/shifts', label: 'الورديات', capability: 'shifts.manage' },
   { href: '/terminals', label: 'أجهزة نقاط البيع', capability: 'terminals.read' },
   { href: '/reports', label: 'التقارير', capability: 'reports.read' },
+  { href: '/seller-reports', label: 'تقارير البائعين', capability: 'seller_reports.read' },
   { href: '/branches', label: 'الفروع', capability: 'branches.manage' },
   { href: '/users', label: 'المستخدمون والصلاحيات', capability: 'users.manage' },
   { href: '/settings', label: 'الإعدادات', capability: 'settings.manage' },
