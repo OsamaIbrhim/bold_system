@@ -22,6 +22,7 @@ import { RolesGuard } from './auth/roles.guard';
 import { TerminalsModule } from './terminals/terminals.module';
 import { PerformanceInterceptor } from './common/performance.interceptor';
 import { HealthModule } from './health/health.module';
+import { SellersModule } from './sellers/sellers.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { HealthModule } from './health/health.module';
     ShiftsModule,
     TerminalsModule,
     HealthModule,
+    SellersModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

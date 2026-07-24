@@ -68,6 +68,9 @@ model User {
   created_purchase_invoices PurchaseInvoice[] @relation("PurchaseCreatedBy")
   reversed_purchase_invoices PurchaseInvoice[] @relation("PurchaseReversedBy")
   created_supplier_returns SupplierReturn[] @relation("SupplierReturnCreatedBy")
+  seller_commission_override SellerCommissionOverride?
+  closed_seller_periods SellerCommissionPeriod[] @relation("SellerPeriodClosedBy")
+  seller_period_rows SellerCommissionPeriodRow[] @relation("SellerPeriodSeller")
 }
 
 model RefreshToken {
@@ -88,6 +91,66 @@ enum Role {
   cashier
   warehouse_manager
   seller
+}
+
+model SellerCommissionSettings {
+  id                 Int      @id @default(1)
+  default_rate       Decimal  @default(0) @db.Decimal(5, 2)
+  default_target     Decimal? @db.Decimal(12, 2)
+  default_bonus      Decimal  @default(0) @db.Decimal(12, 2)
+  period_length_days Int      @default(30)
+  period_anchor      DateTime @default(now())
+  updated_at         DateTime @updatedAt
+}
+
+model SellerCommissionOverride {
+  seller_id    String   @id @db.Uuid
+  seller       User     @relation(fields: [seller_id], references: [id], onDelete: Cascade)
+  rate         Decimal? @db.Decimal(5, 2)
+  target       Decimal? @db.Decimal(12, 2)
+  bonus        Decimal? @db.Decimal(12, 2)
+  updated_at   DateTime @updatedAt
+}
+
+model SellerCommissionPeriod {
+  id                    String   @id @default(uuid()) @db.Uuid
+  period_start          DateTime
+  period_end_exclusive  DateTime
+  period_length_days    Int
+  default_rate          Decimal  @db.Decimal(5, 2)
+  default_target        Decimal? @db.Decimal(12, 2)
+  default_bonus         Decimal  @db.Decimal(12, 2)
+  closed_by             String   @db.Uuid
+  closer                User     @relation("SellerPeriodClosedBy", fields: [closed_by], references: [id], onDelete: Restrict)
+  closed_at             DateTime @default(now())
+  rows                   SellerCommissionPeriodRow[]
+
+  @@unique([period_start, period_end_exclusive])
+  @@index([closed_at(sort: Desc)])
+}
+
+model SellerCommissionPeriodRow {
+  period_id              String   @db.Uuid
+  period                 SellerCommissionPeriod @relation(fields: [period_id], references: [id], onDelete: Cascade)
+  seller_id              String   @db.Uuid
+  seller                 User     @relation("SellerPeriodSeller", fields: [seller_id], references: [id], onDelete: Restrict)
+  seller_name            String
+  branch_id              String?  @db.Uuid
+  branch_name            String?
+  invoice_count          Int
+  gross_sales_before_tax Decimal  @db.Decimal(12, 2)
+  return_count           Int
+  returns_before_tax     Decimal  @db.Decimal(12, 2)
+  net_sales_before_tax   Decimal  @db.Decimal(12, 2)
+  commission_rate        Decimal  @db.Decimal(5, 2)
+  percentage_commission  Decimal  @db.Decimal(12, 2)
+  target                 Decimal? @db.Decimal(12, 2)
+  target_achieved        Boolean
+  target_bonus           Decimal  @db.Decimal(12, 2)
+  estimated_total        Decimal  @db.Decimal(12, 2)
+
+  @@id([period_id, seller_id])
+  @@index([seller_id, period_id])
 }
 
 model Supplier {
