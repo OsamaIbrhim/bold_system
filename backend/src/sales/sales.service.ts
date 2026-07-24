@@ -102,6 +102,7 @@ export class SalesService {
         items: { include: { variant: { include: { product: true } }, return_items: { where: { return_record: { status: 'completed' } } } } },
         branch: true, customer: true,
         cashier: { select: { id: true, name: true, role: true } },
+        seller: { select: { id: true, name: true, role: true } },
         receiver: { select: { id: true, name: true, role: true } },
         shift: true,
         terminal: { select: { id: true, terminal_code: true, name: true } },
@@ -133,6 +134,7 @@ export class SalesService {
       terminal_id: terminalId,
       shift_id: dto.shift_id,
       origin_cashier_id: dto.origin_cashier_id,
+      seller_id: dto.seller_id,
       offline_session_id: dto.offline_session_id,
       terminal_sequence: dto.terminal_sequence,
       occurred_at: occurredAt.toISOString(),
@@ -244,6 +246,7 @@ export class SalesService {
           existing.terminal_id !== terminal.id ||
           existing.shift_id !== dto.shift_id ||
           existing.cashier_id !== dto.origin_cashier_id ||
+          existing.seller_id !== dto.seller_id ||
           existing.offline_session_id !== dto.offline_session_id ||
           existing.terminal_sequence !== terminalSequence ||
           existing.command_fingerprint !== commandFingerprint
@@ -257,12 +260,16 @@ export class SalesService {
         return existing;
       }
 
-      const [branch, shift, originCashier, sequenceOwner] = await Promise.all([
+      const [branch, shift, originCashier, seller, sequenceOwner] = await Promise.all([
         tx.branch.findUnique({ where: { id: dto.branch_id } }),
         tx.shift.findUnique({ where: { id: dto.shift_id } }),
         tx.user.findUnique({
           where: { id: dto.origin_cashier_id },
           select: { id: true },
+        }),
+        tx.user.findUnique({
+          where: { id: dto.seller_id },
+          select: { id: true, branch_id: true, role: true },
         }),
         tx.salesInvoice.findFirst({
           where: {
@@ -281,6 +288,17 @@ export class SalesService {
           code: 'OFFLINE_ORIGIN_CASHIER_INVALID',
           message_ar: 'تعذر إثبات هوية الكاشير الأصلي لهذه العملية.',
           message: 'The original cashier cannot be validated',
+        });
+      }
+      if (
+        !seller ||
+        seller.role !== 'seller' ||
+        seller.branch_id !== dto.branch_id
+      ) {
+        throw new UnprocessableEntityException({
+          code: 'SALE_SELLER_INVALID',
+          message_ar: 'البائع المحدد غير موجود أو لا يتبع فرع الفاتورة.',
+          message: 'The selected seller is invalid for this branch',
         });
       }
       if (!shift || shift.branch_id !== dto.branch_id) {
@@ -466,6 +484,7 @@ export class SalesService {
           branch_id: dto.branch_id,
           customer_id: customerId,
           cashier_id: dto.origin_cashier_id,
+          seller_id: dto.seller_id,
           received_by: actor.sub,
           terminal_id: terminal.id,
           shift_id: dto.shift_id,
@@ -507,6 +526,7 @@ export class SalesService {
             invoice_total: total,
             pricing_mode: normalized.mode,
             origin_cashier_id: dto.origin_cashier_id,
+            seller_id: dto.seller_id,
             received_by: actor.sub,
             terminal_id: terminal.id,
             terminal_sequence: dto.terminal_sequence,

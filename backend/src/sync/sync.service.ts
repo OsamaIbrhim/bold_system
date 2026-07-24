@@ -37,11 +37,13 @@ export class SyncService {
     });
     const issuedAt = new Date().toISOString();
     const catalogValidUntil = this.catalogValidUntil();
+    const sellers = await this.sellers(branchId);
     if (!changes.length) {
       return {
         mode: 'delta', cursor, server_time: issuedAt,
         catalog_valid_until: catalogValidUntil,
         products: [], stock: [], deleted_variant_ids: [],
+        sellers, reset_sellers: true,
         reset_products: false, reset_stock: false, has_more: false,
       };
     }
@@ -83,16 +85,18 @@ export class SyncService {
       catalog_valid_until: catalogValidUntil,
       products, stock, deleted_variant_ids: deletedVariantIds,
       reset_products: resetCatalog, reset_stock: resetCatalog,
+      sellers, reset_sellers: true,
       has_more: changes.length === 5_000,
     };
   }
 
   private async snapshot(branchId: string) {
     const cursor = await this.prisma.syncChange.aggregate({ _max: { sequence: true } });
-    const [variants, stock, rules] = await Promise.all([
+    const [variants, stock, rules, sellers] = await Promise.all([
       this.prisma.productVariant.findMany({ where: { product: { is_active: true } }, include: { product: true } }),
       this.prisma.inventoryStock.findMany({ where: { branch_id: branchId } }),
       this.pricing.loadActiveRules(),
+      this.sellers(branchId),
     ]);
     const issuedAt = new Date().toISOString();
     const quotes = this.pricing.quoteMany(variants, rules);
@@ -105,8 +109,23 @@ export class SyncService {
       server_time: issuedAt,
       catalog_valid_until: this.catalogValidUntil(),
       products, stock, deleted_variant_ids: [],
+      sellers, reset_sellers: true,
       reset_products: true, reset_stock: true, has_more: false,
     };
+  }
+
+  private sellers(branchId: string) {
+    const users = (this.prisma as any).user;
+    if (!users) return Promise.resolve([]);
+    return users.findMany({
+      where: {
+        branch_id: branchId,
+        role: 'seller',
+        is_active: true,
+      },
+      select: { id: true, name: true },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
   }
 
   private productSnapshot(branchId: string, variant: any, quote: ReturnType<PricingService['quote']>, issuedAt: string) {

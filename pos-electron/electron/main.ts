@@ -718,6 +718,10 @@ async function initDb() {
       variant_id TEXT PRIMARY KEY,
       qty INTEGER
     );
+    CREATE TABLE IF NOT EXISTS sellers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS outbox (
       id TEXT PRIMARY KEY,
       type TEXT,
@@ -741,6 +745,7 @@ async function initDb() {
       payment_method TEXT,
       customer_phone TEXT,
       cashier_id TEXT,
+      seller_id TEXT,
       shift_id TEXT,
       offline_session_id TEXT,
       terminal_sequence TEXT,
@@ -784,6 +789,7 @@ async function initDb() {
     `ALTER TABLE sales_local ADD COLUMN synced_at TEXT`,
     `ALTER TABLE sales_local ADD COLUMN occurred_at TEXT`,
     `ALTER TABLE sales_local ADD COLUMN cashier_id TEXT`,
+    `ALTER TABLE sales_local ADD COLUMN seller_id TEXT`,
     `ALTER TABLE sales_local ADD COLUMN shift_id TEXT`,
     `ALTER TABLE sales_local ADD COLUMN offline_session_id TEXT`,
     `ALTER TABLE sales_local ADD COLUMN terminal_sequence TEXT`,
@@ -1210,6 +1216,10 @@ ipcMain.handle('pos:stock', (_e, variantId: string) =>
   Number(get(`SELECT qty FROM stock WHERE variant_id=?`, [variantId])?.qty || 0),
 )
 
+ipcMain.handle('pos:list_sellers', () =>
+  q(`SELECT id,name FROM sellers ORDER BY name,id`),
+)
+
 ipcMain.handle('pos:list_local_sales', () =>
   q(
     `SELECT
@@ -1225,6 +1235,7 @@ ipcMain.handle('pos:list_local_sales', () =>
        s.payment_method,
        s.customer_phone,
        s.cashier_id,
+       s.seller_id,
        s.shift_id,
        s.offline_session_id,
        s.terminal_sequence,
@@ -1409,8 +1420,18 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
     localTotal,
     paymentMethod,
     customerPhone,
+    sellerId,
     language,
   } = validated
+  const seller = get(
+    `SELECT id FROM sellers WHERE id=?`,
+    [sellerId],
+  )
+  if (!seller) {
+    throw new Error(
+      'البائع المحدد غير موجود في قائمة الفرع المحلية. نفّذ مزامنة واختر البائع مرة أخرى.',
+    )
+  }
   const existing = get(
     `SELECT sync_id,invoice_number,total,terminal_sequence,
             COALESCE(occurred_at,created_at) AS occurred_at
@@ -1466,6 +1487,7 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
     branch_id: device.branch_id,
     shift_id: context.shift_id,
     origin_cashier_id: context.user_id,
+    seller_id: sellerId,
     offline_session_id: context.session_id,
     terminal_sequence: terminalSequence,
     occurred_at: occurredAt,
@@ -1489,8 +1511,8 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
     run(
       `INSERT INTO sales_local (
         sync_id,invoice_number,total,created_at,occurred_at,payment_method,
-        customer_phone,cashier_id,shift_id,offline_session_id,terminal_sequence
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        customer_phone,cashier_id,seller_id,shift_id,offline_session_id,terminal_sequence
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         syncId,
         invoiceNumber,
@@ -1500,6 +1522,7 @@ ipcMain.handle('pos:sale', (_e, sale: any) => {
         command.payment_method,
         command.customer_phone || null,
         context.user_id,
+        sellerId,
         context.shift_id,
         context.session_id,
         terminalSequence,
@@ -1697,6 +1720,7 @@ ipcMain.handle('sync:set_status', (_e, status: any) => {
 ipcMain.handle('sync:apply_pull', (_e, data: any) => {
   const products = Array.isArray(data?.products) ? data.products : []
   const stock = Array.isArray(data?.stock) ? data.stock : []
+  const sellers = Array.isArray(data?.sellers) ? data.sellers : []
   const refreshRequired = catalogNeedsFullRefresh()
 
   // Never advance an old cursor while the local database still requires the
@@ -1729,10 +1753,22 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
       'The server returned invalid branch stock data',
     )
   }
+  if (
+    sellers.some(
+      (seller: any) =>
+        !/^[0-9a-f-]{36}$/i.test(String(seller?.id || '')) ||
+        !String(seller?.name || '').trim(),
+    )
+  ) {
+    throw new Error(
+      'The server returned invalid branch seller data',
+    )
+  }
 
   return persistedMutation(() => {
     if (data.reset_products) db.exec('DELETE FROM products')
     if (data.reset_stock) db.exec('DELETE FROM stock')
+    if (data.reset_sellers) db.exec('DELETE FROM sellers')
     for (const id of data.deleted_variant_ids || []) {
       run(`DELETE FROM products WHERE id=?`, [id])
       run(`DELETE FROM stock WHERE variant_id=?`, [id])
@@ -1753,6 +1789,12 @@ ipcMain.handle('sync:apply_pull', (_e, data: any) => {
       run(`INSERT OR REPLACE INTO stock (variant_id,qty) VALUES (?,?)`, [
         s.variant_id,
         Number(s.qty_on_hand),
+      ])
+    }
+    for (const seller of sellers) {
+      run(`INSERT OR REPLACE INTO sellers (id,name) VALUES (?,?)`, [
+        seller.id,
+        String(seller.name).trim(),
       ])
     }
     if (data.reset_products) {

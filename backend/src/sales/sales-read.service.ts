@@ -55,6 +55,7 @@ export class SalesReadService {
           branch_id: true,
           customer_id: true,
           cashier_id: true,
+          seller_id: true,
           terminal_id: true,
           status: true,
           subtotal: true,
@@ -112,10 +113,17 @@ export class SalesReadService {
           .filter((value): value is string => !!value),
       ),
     ]
+    const sellerIds = [
+      ...new Set(
+        invoices
+          .map((invoice) => invoice.seller_id)
+          .filter((value): value is string => !!value),
+      ),
+    ]
 
     // All relationship hydration is one parallel database wave instead of
     // Prisma's sequential nested relation loading over a remote connection.
-    const [branches, customers, terminals, itemCounts, returnCounts] =
+    const [branches, customers, terminals, sellers, itemCounts, returnCounts] =
       await Promise.all([
         this.prisma.branch.findMany({
           where: { id: { in: branchIds } },
@@ -131,6 +139,12 @@ export class SalesReadService {
           ? this.prisma.posTerminal.findMany({
               where: { id: { in: terminalIds } },
               select: { id: true, terminal_code: true, name: true },
+            })
+          : Promise.resolve([]),
+        sellerIds.length
+          ? this.prisma.user.findMany({
+              where: { id: { in: sellerIds } },
+              select: { id: true, name: true, role: true },
             })
           : Promise.resolve([]),
         this.prisma.salesInvoiceItem.groupBy({
@@ -150,6 +164,7 @@ export class SalesReadService {
     )
     const customerById = new Map(customers.map((row) => [row.id, row]))
     const terminalById = new Map(terminals.map((row) => [row.id, row]))
+    const sellerById = new Map(sellers.map((row) => [row.id, row]))
     const itemCountByInvoice = new Map(
       itemCounts.map((row) => [row.sales_invoice_id, row._count._all]),
     )
@@ -158,12 +173,14 @@ export class SalesReadService {
     )
 
     return invoices.map((invoice) => {
-      const { customer_id, terminal_id, ...safe } = invoice
+      const { customer_id, terminal_id, seller_id, ...safe } = invoice
       return {
         ...safe,
         branch: branchById.get(invoice.branch_id),
         customer: customer_id ? customerById.get(customer_id) || null : null,
         terminal: terminal_id ? terminalById.get(terminal_id) || null : null,
+        seller_id,
+        seller: seller_id ? sellerById.get(seller_id) || null : null,
         _count: {
           items: itemCountByInvoice.get(invoice.id) || 0,
           original_returns: returnCountByInvoice.get(invoice.id) || 0,
