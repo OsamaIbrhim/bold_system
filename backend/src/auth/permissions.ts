@@ -35,6 +35,7 @@ const roleCapabilities: Record<Role, Capability[]> = {
     'customers.manage', 'purchasing.read', 'purchasing.manage',
     'suppliers.manage', 'pricing.manage', 'offers.manage', 'transfers.manage',
     'reports.read', 'shifts.manage', 'terminals.read',
+    'terminals.manage',
   ],
   cashier: [
     'products.read', 'inventory.read', 'sales.create', 'returns.create',

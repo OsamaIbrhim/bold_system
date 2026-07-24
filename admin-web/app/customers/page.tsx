@@ -1,7 +1,9 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
-import { apiGet, apiPost, apiDelete } from '@/lib/api'
+import { apiGet, apiPost, apiDelete, getStoredUser } from '@/lib/api'
+import { hasCapability } from '@/lib/permissions'
 export default function Customers() {
+  const canManage = hasCapability(getStoredUser(), 'customers.manage')
   const [phone, setPhone] = useState('')
   const [list, setList] = useState<any[]>([])
   const [name, setName] = useState('')
@@ -35,7 +37,7 @@ export default function Customers() {
       <button className="btn" onClick={search}>بحث</button></div>
       <table><thead><tr><th>الاسم</th><th>الهاتف</th><th>فواتير</th><th>إجمالي</th><th>VIP</th><th></th></tr></thead>
         <tbody>{list.map((c: any) => <tr key={c.id}><td>{c.name || '-'}</td><td>{c.phone}</td><td>{c.total_invoices || 0}</td><td>{Number(c.total_spent || 0)} ج</td><td>{c.is_vip ? '⭐' : '-'}</td><td>
-          <button className="text-sm px-2" onClick={() => toggleVip(c.id, !c.is_vip)}>{c.is_vip ? 'إلغاء VIP' : 'ترقية VIP'}</button>
-          <button className="text-red-600 text-sm px-2" onClick={() => del(c.id)}>حذف</button>
+          {canManage&&<button className="text-sm px-2" onClick={() => toggleVip(c.id, !c.is_vip)}>{c.is_vip ? 'إلغاء VIP' : 'ترقية VIP'}</button>}
+          {canManage&&<button className="text-red-600 text-sm px-2" onClick={() => del(c.id)}>حذف</button>}
         </td></tr>)}{loading&&<tr><td colSpan={6} className="text-center py-8 text-gray-500">جارٍ تحميل العملاء…</td></tr>}{!loading&&!list.length&&<tr><td colSpan={6} className="text-center py-8 text-gray-500">لا يوجد عملاء مطابقون. راجع البحث أو أضف عميلاً جديداً من النموذج أعلاه.</td></tr>}</tbody></table></div></div>)
 }
