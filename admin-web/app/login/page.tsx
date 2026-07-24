@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { API, ApiError } from '@/lib/api'
+import { canAccessPath, firstAccessiblePath } from '@/lib/permissions'
 export default function Login(){
   const [phone,setPhone] = useState('')
   const [password,setPassword] = useState('')
@@ -25,7 +26,10 @@ export default function Login(){
       localStorage.setItem('user', JSON.stringify(j.user))
       setMsg('تم تسجيل الدخول ✓')
       const requested = new URLSearchParams(location.search).get('next') || '/'
-      location.href=requested.startsWith('/') && !requested.startsWith('//') ? requested : '/'
+      const safeRequested = requested.startsWith('/') && !requested.startsWith('//') ? requested : '/'
+      location.href = canAccessPath(j.user, safeRequested)
+        ? safeRequested
+        : firstAccessiblePath(j.user)
     } catch (error) {
       const apiError = error instanceof ApiError ? error : new ApiError({})
       setField(apiError.field || '')
