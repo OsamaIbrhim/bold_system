@@ -61,6 +61,7 @@ model User {
   created_pos_enrollments   PosTerminalEnrollment[] @relation("TerminalEnrollmentCreatedBy")
   enrolled_pos_terminals    PosTerminal[]       @relation("TerminalEnrolledBy")
   originated_sales          SalesInvoice[]      @relation("SalesOriginCashier")
+  attributed_sales          SalesInvoice[]      @relation("SalesSeller")
   received_sales            SalesInvoice[]      @relation("SalesReceivedBy")
   inventory_movements       InventoryMovement[] @relation("InventoryMovementCreatedBy")
   inventory_cost_movements  InventoryCostMovement[] @relation("InventoryCostMovementCreatedBy")
@@ -313,6 +314,8 @@ model SalesInvoice {
   // authenticated user uploads the command after reconnecting.
   cashier_id          String?             @db.Uuid
   cashier             User?               @relation("SalesOriginCashier", fields: [cashier_id], references: [id], onDelete: SetNull)
+  seller_id           String?             @db.Uuid
+  seller              User?               @relation("SalesSeller", fields: [seller_id], references: [id], onDelete: SetNull)
   received_by         String?             @db.Uuid
   receiver            User?               @relation("SalesReceivedBy", fields: [received_by], references: [id], onDelete: SetNull)
   terminal_id         String?             @db.Uuid
@@ -345,6 +348,7 @@ model SalesInvoice {
   @@index([terminal_id, occurred_at])
   @@index([shift_id, occurred_at])
   @@index([cashier_id, occurred_at])
+  @@index([seller_id, occurred_at])
   @@index([customer_id, occurred_at(sort: Desc), id(sort: Desc)])
   @@index([received_at])
   @@index([invoice_number(ops: raw("gin_trgm_ops"))], type: Gin, map: "SalesInvoice_invoice_number_trgm_idx")

@@ -30,6 +30,7 @@ export function validateLocalSaleInput(
 ) {
   const syncId = String(sale?.sync_id || '')
   const branchId = String(sale?.branch_id || '')
+  const sellerId = String(sale?.seller_id || '')
   const paymentMethod = String(
     sale?.payment_method || '',
   ) as PaymentMethod
@@ -52,6 +53,12 @@ export function validateLocalSaleInput(
     throw new PosSaleValidationError(
       'BRANCH_MISMATCH',
       'هذا الجهاز غير مسجل على الفرع المحدد.',
+    )
+  }
+  if (!UUID.test(sellerId)) {
+    throw new PosSaleValidationError(
+      'SELLER_REQUIRED',
+      'اختر البائع قبل إتمام الفاتورة.',
     )
   }
   if (!PAYMENT_METHODS.includes(paymentMethod)) {
@@ -122,6 +129,7 @@ export function validateLocalSaleInput(
   return {
     syncId,
     branchId,
+    sellerId,
     paymentMethod,
     customerPhone,
     language: sale?.language === 'en' ? 'en' as const : 'ar' as const,

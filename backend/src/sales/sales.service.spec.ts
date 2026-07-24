@@ -17,6 +17,7 @@ const terminal = {
 const shiftId = '33333333-3333-4333-8333-333333333333';
 const offlineSessionId = '44444444-4444-4444-8444-444444444444';
 const variantId = '55555555-5555-4555-8555-555555555555';
+const sellerId = '77777777-7777-4777-8777-777777777777';
 const syncId = '66666666-6666-4666-8666-666666666666';
 const occurredAt = '2026-07-22T10:00:00.000Z';
 
@@ -26,6 +27,7 @@ function saleDto(overrides: Record<string, unknown> = {}) {
     branch_id: actor.branch_id,
     shift_id: shiftId,
     origin_cashier_id: actor.sub,
+    seller_id: sellerId,
     offline_session_id: offlineSessionId,
     terminal_sequence: '1',
     occurred_at: occurredAt,
@@ -69,11 +71,10 @@ function setupSale(options: {
       update: jest.fn().mockResolvedValue({}),
     },
     user: {
-      findUnique: jest.fn().mockResolvedValue({
-        id: actor.sub,
-        role: actor.role,
-        branch_id: actor.branch_id,
-      }),
+      findUnique: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(where.id === sellerId
+          ? { id: sellerId, role: 'seller', branch_id: actor.branch_id }
+          : { id: actor.sub, role: actor.role, branch_id: actor.branch_id })),
     },
     posTerminal: {
       updateMany: jest.fn().mockResolvedValue({
@@ -404,6 +405,7 @@ describe('SalesService', () => {
       terminal_id: terminal.id,
       shift_id: shiftId,
       cashier_id: actor.sub,
+      seller_id: sellerId,
       offline_session_id: offlineSessionId,
       terminal_sequence: 1n,
       command_fingerprint: commandFingerprint,
@@ -432,6 +434,7 @@ describe('SalesService', () => {
       terminal_id: terminal.id,
       shift_id: shiftId,
       cashier_id: actor.sub,
+      seller_id: sellerId,
       offline_session_id: offlineSessionId,
       terminal_sequence: 1n,
       command_fingerprint: originalFingerprint,

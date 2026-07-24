@@ -69,6 +69,11 @@ export type Customer = {
   is_vip?: boolean
 }
 
+export type Seller = {
+  id: string
+  name: string
+}
+
 export type ReturnedInvoiceItem = {
   qty: number
 }
@@ -111,6 +116,8 @@ export type Invoice = {
   customer?: Customer | null
   cashier_id?: string
   cashier?: { id: string; name: string; role: string } | null
+  seller_id?: string
+  seller?: Seller | null
   receiver?: { id: string; name: string; role: string } | null
   shift?: Shift | null
   terminal?: { id: string; terminal_code: string; name: string } | null

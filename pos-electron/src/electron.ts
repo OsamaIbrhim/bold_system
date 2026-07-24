@@ -3,6 +3,7 @@ import {
   HeldSale,
   OfflineAccountingContext,
   Product,
+  Seller,
   SyncState,
 } from './types'
 
@@ -18,6 +19,7 @@ export type LocalSale = {
   occurred_at?: string
   shift_id?: string | null
   cashier_id?: string | null
+  seller_id?: string | null
   offline_session_id?: string | null
   terminal_sequence?: string | null
   sync_status: string
@@ -31,6 +33,7 @@ export type LocalSale = {
 export type BoldBridge = {
   search(query: string): Promise<Product[]>
   stock(variantId: string): Promise<number>
+  sellers(): Promise<Seller[]>
 
   sale(payload: unknown): Promise<{
     sync_id: string

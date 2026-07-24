@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('bold', {
   search: (q: string) => ipcRenderer.invoke('pos:search', q),
   stock: (variant_id: string) => ipcRenderer.invoke('pos:stock', variant_id),
+  sellers: () => ipcRenderer.invoke('pos:list_sellers'),
   sale: (sale: any) => ipcRenderer.invoke('pos:sale', sale),
   print: (invoice: any, lang: 'ar' | 'en') =>
     ipcRenderer.invoke('pos:print', invoice, lang),
