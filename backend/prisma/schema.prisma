@@ -43,6 +43,8 @@ model User {
   email                     String?             @unique
   password_hash             String
   role                      Role
+  granted_capabilities      String[]            @default([])
+  revoked_capabilities      String[]            @default([])
   is_active                 Boolean             @default(true)
   created_at                DateTime            @default(now())
   created_returns           Return[]            @relation("ReturnCreatedBy")
@@ -84,6 +86,7 @@ enum Role {
   branch_manager
   cashier
   warehouse_manager
+  seller
 }
 
 model Supplier {

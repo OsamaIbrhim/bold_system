@@ -3,7 +3,9 @@ import { Request } from 'express';
 import { PricingService } from './pricing.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { CalculatePriceDto } from './dto/calculate-price.dto';
+import { RequireCapabilities } from '../auth/roles.guard';
 @Controller('pricing')
+@RequireCapabilities('products.read')
 export class PricingController {
   constructor(private pricing: PricingService) {}
   @Post('calculate')

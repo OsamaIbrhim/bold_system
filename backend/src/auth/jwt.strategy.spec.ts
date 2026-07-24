@@ -15,7 +15,12 @@ describe('JwtStrategy authorization recheck cache', () => {
       strategy.validate({ sub: 'user-1' }),
     ]);
     const third = await strategy.validate({ sub: 'user-1' });
-    expect(first).toEqual({ sub: 'user-1', role: 'owner', branch_id: null });
+    expect(first).toEqual(expect.objectContaining({
+      sub: 'user-1',
+      role: 'owner',
+      branch_id: null,
+      capabilities: expect.arrayContaining(['users.manage']),
+    }));
     expect(second).toEqual(first);
     expect(third).toEqual(first);
     expect(prisma.user.findUnique).toHaveBeenCalledTimes(1);

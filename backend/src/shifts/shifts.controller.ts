@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { ShiftsService } from './shifts.service';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 import { CloseShiftDto, OpenShiftDto } from './dto/shift.dto';
@@ -18,6 +18,7 @@ import { TerminalsService } from '../terminals/terminals.service';
 
 @Controller('shifts')
 @Roles('owner', 'branch_manager', 'cashier')
+@RequireCapabilities('shifts.manage')
 export class ShiftsController {
   constructor(
     private svc: ShiftsService,

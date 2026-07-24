@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { PurchasingService } from './purchasing.service';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import {
   assertBranchAccess,
@@ -25,6 +25,7 @@ import {
 
 @Controller('purchasing')
 @Roles('owner', 'branch_manager', 'warehouse_manager')
+@RequireCapabilities('purchasing.read')
 export class PurchasingController {
   constructor(private svc: PurchasingService) {}
 
@@ -61,6 +62,7 @@ export class PurchasingController {
     return invoice;
   }
 
+  @RequireCapabilities('purchasing.manage')
   @Post('receive')
   receive(
     @Body() dto: ReceivePurchaseDto,
@@ -75,6 +77,7 @@ export class PurchasingController {
   }
 
 
+  @RequireCapabilities('purchasing.manage')
   @Post('invoices/:id/supplier-returns')
   async returnToSupplier(
     @Param('id') id: string,
@@ -110,6 +113,7 @@ export class PurchasingController {
     );
   }
 
+  @RequireCapabilities('purchasing.manage')
   @Post('invoices/:id/reverse')
   async reverse(
     @Param('id') id: string,
@@ -155,6 +159,7 @@ export class PurchasingController {
     return this.svc.costReconciliation(variant_id);
   }
 
+  @RequireCapabilities('purchasing.manage')
   @Post('ocr-import')
   ocr(@Body() dto: OcrImportDto) {
     return this.svc.ocrImport(dto.fileUrl);

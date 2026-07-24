@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Headers, Param, Patch, Post, Req } from '@nestjs/common';
 import { Request } from 'express';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { CreateTerminalEnrollmentDto, EnrollTerminalDto, TerminalHeartbeatDto, UpdateTerminalDto } from './dto/terminal.dto';
 import { TerminalsService } from './terminals.service';
@@ -11,6 +11,7 @@ export class TerminalsController {
   constructor(private service: TerminalsService) {}
 
   @Roles('owner', 'branch_manager')
+  @RequireCapabilities('terminals.manage')
   @Post('enrollment-codes')
   createEnrollment(
     @Body() dto: CreateTerminalEnrollmentDto,
@@ -26,6 +27,7 @@ export class TerminalsController {
   }
 
   @Roles('branch_manager', 'cashier')
+  @RequireCapabilities('sales.create')
   @Post('heartbeat')
   heartbeat(
     @Body() dto: TerminalHeartbeatDto,
@@ -36,12 +38,14 @@ export class TerminalsController {
   }
 
   @Roles('owner', 'branch_manager')
+  @RequireCapabilities('terminals.read')
   @Get()
   list(@Req() req: Request & { user: AuthenticatedUser }) {
     return this.service.list(req.user);
   }
 
   @Roles('owner', 'branch_manager')
+  @RequireCapabilities('terminals.manage')
   @Patch(':id')
   update(
     @Param('id') id: string,

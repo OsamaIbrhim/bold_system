@@ -1,12 +1,13 @@
 import { BadRequestException, Controller, Get, Headers, NotImplementedException, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { SyncService } from './sync.service';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 import { TerminalsService } from '../terminals/terminals.service';
 @Controller('sync')
 @Roles('owner', 'branch_manager', 'cashier')
+@RequireCapabilities('sales.create')
 export class SyncController {
   constructor(private svc: SyncService, private terminals: TerminalsService) {}
   @Post('push') push() {

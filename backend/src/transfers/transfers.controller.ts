@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { TransfersService } from './transfers.service';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 import {
@@ -13,6 +13,7 @@ import {
 
 @Controller('transfers')
 @Roles('owner', 'branch_manager', 'warehouse_manager')
+@RequireCapabilities('transfers.manage')
 export class TransfersController {
   constructor(private svc: TransfersService) {}
 

@@ -4,6 +4,12 @@ import { UsersService } from './users.service';
 
 describe('UsersService', () => {
   const create = jest.fn();
+  const actor = {
+    sub: 'owner-id',
+    role: Role.owner,
+    branch_id: null,
+    capabilities: ['users.manage'],
+  } as any;
   const service = new UsersService({
     user: { create },
   } as any);
@@ -18,7 +24,7 @@ describe('UsersService', () => {
       email: 'email-only@example.com',
       password: 'password123',
       role: Role.cashier,
-    } as any)).rejects.toBeInstanceOf(BadRequestException);
+    } as any, actor)).rejects.toBeInstanceOf(BadRequestException);
 
     expect(create).not.toHaveBeenCalled();
   });
@@ -31,7 +37,7 @@ describe('UsersService', () => {
       phone: '010 1234 5678',
       password: 'password123',
       role: Role.cashier,
-    });
+    }, actor);
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
