@@ -2,10 +2,11 @@ import { Controller, Get, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { InventoryService } from './inventory.service';
 import { AuthenticatedUser } from '../auth/authenticated-user';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { resolveBranchScope } from '../auth/branch-access';
 
 @Controller('inventory')
+@RequireCapabilities('inventory.read')
 export class InventoryController {
   constructor(private svc: InventoryService) {}
 

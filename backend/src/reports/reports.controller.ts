@@ -2,11 +2,12 @@ import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { ReportsService } from './reports.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { resolveBranchScope } from '../auth/branch-access';
 @Controller('reports')
 @Roles('owner', 'branch_manager')
+@RequireCapabilities('reports.read')
 export class ReportsController {
   constructor(private svc: ReportsService, private notify: NotificationsService) {}
 
@@ -54,6 +55,7 @@ export class ReportsController {
       resolveBranchScope(req.user, branch_id, ['owner', 'warehouse_manager']),
     );
   }
+  @RequireCapabilities('reports.send')
   @Post('send') async send(
     @Body() dto: { from: string, to: string, branch_id?: string, channels: string[] },
     @Req() req: Request & { user: AuthenticatedUser },

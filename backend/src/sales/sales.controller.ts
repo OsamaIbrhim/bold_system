@@ -15,7 +15,7 @@ import { Request, Response } from 'express'
 import { SalesService } from './sales.service'
 import { SalesReadService } from './sales-read.service'
 import { InvoicePdfService } from './invoice-pdf.service'
-import { Roles } from '../auth/roles.guard'
+import { RequireCapabilities, Roles } from '../auth/roles.guard'
 import { CreateSaleDto } from './dto/create-sale.dto'
 import { AuthenticatedUser } from '../auth/authenticated-user'
 import { CreateReturnDto } from './dto/create-return.dto'
@@ -34,6 +34,7 @@ export class SalesController {
   ) {}
 
   @Roles('owner', 'branch_manager', 'cashier')
+  @RequireCapabilities('sales.read')
   @Get('sales')
   listSales(
     @Query() dto: ListSalesDto,
@@ -49,6 +50,7 @@ export class SalesController {
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
+  @RequireCapabilities('sales.read')
   @Get('sales/:id')
   getSale(
     @Param('id') id: string,
@@ -58,6 +60,7 @@ export class SalesController {
   }
 
   @Roles('branch_manager', 'cashier')
+  @RequireCapabilities('sales.create')
   @Post('pos/sale')
   async sale(
     @Body() dto: CreateSaleDto,
@@ -81,6 +84,7 @@ export class SalesController {
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
+  @RequireCapabilities('returns.create')
   @Post('pos/return')
   async ret(
     @Body() dto: CreateReturnDto,
@@ -100,6 +104,7 @@ export class SalesController {
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
+  @RequireCapabilities('returns.create')
   @Get('pos/invoices/lookup')
   async lookupInvoice(
     @Query('reference') reference: string,
@@ -127,6 +132,7 @@ export class SalesController {
 
   @Get('sales/:id/pdf')
   @Roles('owner', 'branch_manager', 'cashier')
+  @RequireCapabilities('sales.read')
   @Header('Content-Type', 'application/pdf')
   async getPdf(
     @Param('id') id: string,
@@ -149,6 +155,7 @@ export class SalesController {
   }
 
   @Roles('owner', 'branch_manager', 'cashier')
+  @RequireCapabilities('sales.read')
   @Get('returns')
   listReturns(
     @Query() dto: ListReturnsDto,

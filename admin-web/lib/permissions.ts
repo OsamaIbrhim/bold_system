@@ -24,6 +24,10 @@ export type Capability = typeof NAV_ITEMS[number]['capability']
   | 'customers.manage'
   | 'purchasing.manage'
   | 'terminals.manage'
+  | 'users.manage'
+  | 'seller_reports.read'
+  | 'seller_settings.manage'
+  | 'seller_periods.close'
 
 export function hasCapability(
   user: Pick<AdminUser, 'capabilities'> | null | undefined,

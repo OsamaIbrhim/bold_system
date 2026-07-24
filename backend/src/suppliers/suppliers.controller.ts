@@ -1,9 +1,10 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { SuppliersService } from './suppliers.service';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { CreateSupplierDto, UpdateSupplierDto } from './dto/supplier.dto';
 @Controller('suppliers')
 @Roles('owner', 'branch_manager', 'warehouse_manager')
+@RequireCapabilities('suppliers.manage')
 export class SuppliersController {
   constructor(private svc: SuppliersService) {}
   @Get() list(@Query('q') q?: string) { return this.svc.findAll(q); }

@@ -1,8 +1,9 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { CustomersService } from './customers.service';
-import { Roles } from '../auth/roles.guard';
+import { RequireCapabilities, Roles } from '../auth/roles.guard';
 import { CreateCustomerDto, SetCustomerVipDto, UpdateCustomerDto } from './dto/customer.dto';
 @Controller('customers')
+@RequireCapabilities('customers.read')
 export class CustomersController {
   constructor(private svc: CustomersService) {}
   @Get() list(@Query('q') q?: string) { return q && q.startsWith('01') ? this.svc.searchByPhone(q) : this.svc.findAll(q); }
@@ -11,9 +12,12 @@ export class CustomersController {
   @Get(':id') get(@Param('id') id: string) { return this.svc.findOne(id); }
   @Post() create(@Body() dto: CreateCustomerDto) { return this.svc.create(dto); }
   @Roles('owner', 'branch_manager')
+  @RequireCapabilities('customers.manage')
   @Patch(':id') update(@Param('id') id: string, @Body() dto: UpdateCustomerDto) { return this.svc.update(id, dto); }
   @Roles('owner', 'branch_manager')
+  @RequireCapabilities('customers.manage')
   @Post(':id/vip') setVip(@Param('id') id: string, @Body() dto: SetCustomerVipDto) { return this.svc.setVip(id, dto.is_vip, dto.vip_price_tier); }
   @Roles('owner', 'branch_manager')
+  @RequireCapabilities('customers.manage')
   @Delete(':id') remove(@Param('id') id: string) { return this.svc.remove(id); }
 }
