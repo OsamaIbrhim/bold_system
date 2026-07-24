@@ -12,4 +12,13 @@ describe('role capabilities', () => {
       'terminals.manage',
     ]));
   });
+
+  it('advertises dashboard and report reads authorized for warehouse managers', () => {
+    expect(capabilitiesFor('warehouse_manager')).toEqual(
+      expect.arrayContaining([
+        'dashboard.read',
+        'reports.read',
+      ]),
+    );
+  });
 });
