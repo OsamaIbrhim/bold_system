@@ -1,7 +1,14 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException, ForbiddenException, Injectable, NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { money, moneyNumber } from '../common/money';
+import { AuthenticatedUser } from '../auth/authenticated-user';
+import {
+  UpdateCommissionSettingsDto,
+  UpdateSellerCommissionDto,
+} from './dto/commission-settings.dto';
 
 @Injectable()
 export class SellersService {
@@ -36,12 +43,13 @@ export class SellersService {
       ...(branchId ? { branch_id: branchId } : {}),
       ...(sellerId ? { id: sellerId } : {}),
     };
-    const [sellers, sales, returns] = await Promise.all([
+    const [sellers, sales, returns, settings] = await Promise.all([
       this.prisma.user.findMany({
         where: sellerWhere,
         select: {
           id: true, name: true, branch_id: true, is_active: true,
           branch: { select: { id: true, code: true, name_ar: true } },
+          seller_commission_override: true,
         },
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
       }),
@@ -70,6 +78,7 @@ export class SellersService {
           original_invoice: { select: { seller_id: true } },
         },
       }),
+      this.getSettings(),
     ]);
 
     const rows = new Map<string, {
@@ -107,15 +116,85 @@ export class SellersService {
       seller_id: sellerId || null,
       rows: sellers.map((seller) => {
         const value = rows.get(seller.id)!;
+        const override = seller.seller_commission_override;
+        const rate = new Prisma.Decimal(override?.rate ?? settings.default_rate);
+        const target = override?.target ?? settings.default_target;
+        const bonus = new Prisma.Decimal(override?.bonus ?? settings.default_bonus);
+        const net = money(value.gross.minus(value.refunds));
+        const percentageCommission = money(net.mul(rate).div(100));
+        const targetAchieved = target !== null && net.gte(target);
+        const targetBonus = targetAchieved ? money(bonus) : money(0);
         return {
           seller,
           invoice_count: value.invoiceCount,
           gross_sales_before_tax: moneyNumber(value.gross),
           return_count: value.returnCount,
           returns_before_tax: moneyNumber(value.refunds),
-          net_sales_before_tax: moneyNumber(money(value.gross.minus(value.refunds))),
+          net_sales_before_tax: moneyNumber(net),
+          commission_rate: Number(rate.toFixed(2)),
+          percentage_commission: moneyNumber(percentageCommission),
+          target: target === null ? null : moneyNumber(target),
+          target_achieved: targetAchieved,
+          target_bonus: moneyNumber(targetBonus),
+          estimated_total: moneyNumber(
+            money(percentageCommission.plus(targetBonus)),
+          ),
         };
       }),
     };
+  }
+
+  async settings(actor: AuthenticatedUser) {
+    const settings = await this.getSettings();
+    const overrides = await this.prisma.sellerCommissionOverride.findMany({
+      where: actor.role === 'owner'
+        ? {}
+        : { seller: { branch_id: actor.branch_id || undefined } },
+      include: { seller: { select: { id: true, name: true, branch_id: true } } },
+      orderBy: { seller: { name: 'asc' } },
+    });
+    return { settings, overrides };
+  }
+
+  updateSettings(dto: UpdateCommissionSettingsDto, actor: AuthenticatedUser) {
+    if (actor.role !== 'owner') throw new ForbiddenException('Only the owner can change commission defaults');
+    return this.prisma.sellerCommissionSettings.upsert({
+      where: { id: 1 },
+      create: {
+        id: 1,
+        ...dto,
+        period_anchor: new Date(dto.period_anchor),
+      },
+      update: {
+        ...dto,
+        period_anchor: new Date(dto.period_anchor),
+      },
+    });
+  }
+
+  async updateSellerSettings(
+    sellerId: string,
+    dto: UpdateSellerCommissionDto,
+    actor: AuthenticatedUser,
+  ) {
+    if (actor.role !== 'owner') throw new ForbiddenException('Only the owner can change seller commissions');
+    const seller = await this.prisma.user.findFirst({
+      where: { id: sellerId, role: 'seller' },
+      select: { id: true },
+    });
+    if (!seller) throw new NotFoundException('Seller not found');
+    return this.prisma.sellerCommissionOverride.upsert({
+      where: { seller_id: sellerId },
+      create: { seller_id: sellerId, ...dto },
+      update: dto,
+    });
+  }
+
+  private getSettings() {
+    return this.prisma.sellerCommissionSettings.upsert({
+      where: { id: 1 },
+      create: { id: 1 },
+      update: {},
+    });
   }
 }
