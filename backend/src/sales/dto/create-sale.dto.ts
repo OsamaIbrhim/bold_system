@@ -61,6 +61,9 @@ export class CreateSaleDto {
   origin_cashier_id: string;
 
   @IsUUID()
+  seller_id: string;
+
+  @IsUUID()
   offline_session_id: string;
 
   @IsString()

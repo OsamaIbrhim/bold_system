@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../api'
 import { bold } from '../electron'
-import { CartItem, Customer, DeviceCredential, HeldSale, OfflineAccountingContext, Product, Session, Shift, SyncState } from '../types'
+import { CartItem, Customer, DeviceCredential, HeldSale, OfflineAccountingContext, Product, Seller, Session, Shift, SyncState } from '../types'
 import { offlineAccountingSummaryMatches } from '../../electron/offline-accounting'
 import { ConfirmDialog, FieldError, Modal, NumericKeypad } from '../components/ui'
 import { cartTotals, fromCents, isValidEgyptianPhone, lineCents, money, normalizeEgyptianPhone, paymentLabel, toCents } from '../utils'
@@ -33,6 +33,8 @@ export function RegisterScreen({
   const [searching,setSearching]=useState(false)
   const [customer,setCustomer]=useState<Customer|null>(null)
   const [customerOpen,setCustomerOpen]=useState(false)
+  const [sellers,setSellers]=useState<Seller[]>([])
+  const [sellerId,setSellerId]=useState('')
   const [checkoutOpen,setCheckoutOpen]=useState(false)
   const [heldOpen,setHeldOpen]=useState(false)
   const [heldSales,setHeldSales]=useState<HeldSale[]>([])
@@ -60,6 +62,13 @@ export function RegisterScreen({
     localStorage.removeItem('bold_pos_held_sales_v1')
     void loadHeldSales()
   },[loadHeldSales])
+
+  useEffect(()=>{
+    bold.sellers().then((rows)=>{
+      setSellers(rows)
+      setSellerId((current)=>rows.some((seller)=>seller.id===current)?current:'')
+    }).catch(()=>setSellers([]))
+  },[syncState.last_sync_at])
 
   const runSearch=async(value=query)=>{
     const term=value.trim(); if(!term)return
@@ -164,6 +173,10 @@ export function RegisterScreen({
 
   const openCheckout=()=>{
     if(!cart.length)return
+    if(!sellerId){
+      notify('اختر البائع المسؤول عن الفاتورة قبل الدفع.','error')
+      return
+    }
     if(!accountingReady){
       notify('تفويض الكاشير والوردية للبيع دون اتصال غير متاح أو منتهي. شغّل الإنترنت حتى يكتمل التجهيز المحاسبي.','error')
       return
@@ -200,7 +213,7 @@ export function RegisterScreen({
     <main className="register-layout">
       <section className="catalog-panel">
         <div className="search-bar"><input ref={searchRef} value={query} onChange={(event)=>setQuery(event.target.value)} onKeyDown={(event)=>{if(event.key==='Enter')runSearch()}} placeholder="امسح الباركود أو ابحث بالـ SKU…" autoFocus/><button className="button primary" onClick={()=>runSearch()} disabled={searching}>{searching?'بحث…':'بحث'}</button></div>
-        <div className="quick-actions"><button onClick={()=>setCustomerOpen(true)}>F3 · العميل <b>{customer?.name||customer?.phone||'بدون عميل'}</b></button><button onClick={()=>void holdSale()}>F4 · تعليق الفاتورة</button><button onClick={()=>{setHeldOpen(true);void loadHeldSales()}}>الفواتير المعلقة <b>{heldSales.length}</b></button></div>
+        <div className="quick-actions"><label className="seller-picker">البائع <select value={sellerId} onChange={(event)=>setSellerId(event.target.value)}><option value="">اختر البائع *</option>{sellers.map((seller)=><option key={seller.id} value={seller.id}>{seller.name}</option>)}</select></label><button onClick={()=>setCustomerOpen(true)}>F3 · العميل <b>{customer?.name||customer?.phone||'بدون عميل'}</b></button><button onClick={()=>void holdSale()}>F4 · تعليق الفاتورة</button><button onClick={()=>{setHeldOpen(true);void loadHeldSales()}}>الفواتير المعلقة <b>{heldSales.length}</b></button></div>
         <div className="product-results">
           {results.map((product)=><button className="product-card" key={product.id} onClick={()=>addProduct(product)}><div><b>{displayName(product)}</b><span>{product.sku}</span></div><div className="variant-meta"><span>{product.color||'—'}</span><span>{product.size||'—'}</span></div><strong>{money(product.selling_price)} ج</strong></button>)}
           {!results.length&&<div className="catalog-empty"><div>⌁</div><h2>جاهز للمسح</h2><p>امسح باركود الصنف أو اكتب SKU ثم اضغط Enter.</p><span>F2 للعودة السريعة إلى البحث</span></div>}
@@ -218,7 +231,7 @@ export function RegisterScreen({
     </main>
 
     <CustomerModal open={customerOpen} value={customer} onSelect={(value)=>{setCustomer(value);setCustomerOpen(false)}} onClose={()=>setCustomerOpen(false)} notify={notify}/>
-    <CheckoutModal open={checkoutOpen} items={cart} customer={customer} session={session} device={device} shift={shift} accountingContext={accountingContext} branchId={device.branch_id} catalogValidUntil={syncState.catalog_valid_until} totals={totals} onSaleSaved={onSync} onClose={()=>setCheckoutOpen(false)} onCompleted={(value)=>{setCheckoutOpen(false);setCart([]);setCustomer(null);setCompleted(value)}} notify={notify}/>
+    <CheckoutModal open={checkoutOpen} items={cart} customer={customer} sellerId={sellerId} session={session} device={device} shift={shift} accountingContext={accountingContext} branchId={device.branch_id} catalogValidUntil={syncState.catalog_valid_until} totals={totals} onSaleSaved={onSync} onClose={()=>setCheckoutOpen(false)} onCompleted={(value)=>{setCheckoutOpen(false);setCart([]);setCustomer(null);setCompleted(value)}} notify={notify}/>
     <HeldSalesModal open={heldOpen} sales={heldSales} loading={heldLoading} onClose={()=>setHeldOpen(false)} onResume={(sale)=>void resumeHeldSale(sale)} onDelete={(sale)=>void deleteHeldSale(sale)}/>
     <SaleSuccessModal value={completed} onClose={()=>{setCompleted(null);searchRef.current?.focus()}}/>
     <ConfirmDialog open={confirmClear} title="تفريغ السلة؟" message="سيتم حذف جميع الأصناف من الفاتورة الحالية." confirmLabel="تفريغ السلة" danger onClose={()=>setConfirmClear(false)} onConfirm={()=>{setCart([]);setConfirmClear(false)}}/>
@@ -237,7 +250,7 @@ function CustomerModal({open,value,onSelect,onClose,notify}:{open:boolean,value:
   return <Modal open={open} title="العميل" onClose={onClose} width="560px"><div className="customer-form"><label>رقم الهاتف</label><div className="inline-field"><input dir="ltr" value={phone} onChange={(event)=>setPhone(event.target.value)} placeholder="01012345678" autoFocus/><button className="button secondary" onClick={lookup} disabled={loading}>بحث</button></div><FieldError>{error}</FieldError>{found?<div className="customer-card"><div><b>{found.name||'عميل بدون اسم'}</b><span dir="ltr">{found.phone}</span></div><div><span>{found.total_invoices||0} فاتورة</span><span>{money(found.total_spent)} ج مشتريات</span>{found.is_vip&&<strong>VIP</strong>}</div><button className="button primary" onClick={()=>onSelect(found)}>اختيار العميل</button></div>:<div className="new-customer"><label>اسم العميل الجديد (اختياري)</label><input value={name} onChange={(event)=>setName(event.target.value)} placeholder="اسم العميل"/><button className="button primary" onClick={create} disabled={loading}>إنشاء واختيار العميل</button></div>}<button className="button ghost full" onClick={()=>onSelect(null)}>إكمال البيع بدون عميل</button></div></Modal>
 }
 
-function CheckoutModal({open,items,customer,session,device,shift,accountingContext,branchId,catalogValidUntil,totals,onSaleSaved,onClose,onCompleted,notify}:{open:boolean,items:CartItem[],customer:Customer|null,session:Session,device:DeviceCredential,shift:Shift,accountingContext:OfflineAccountingContext|null,branchId:string,catalogValidUntil?:string|null,totals:ReturnType<typeof cartTotals>,onSaleSaved:()=>void,onClose:()=>void,onCompleted:(value:any)=>void,notify:(message:string,tone?:'success'|'error'|'info')=>void}){
+function CheckoutModal({open,items,customer,sellerId,session,device,shift,accountingContext,branchId,catalogValidUntil,totals,onSaleSaved,onClose,onCompleted,notify}:{open:boolean,items:CartItem[],customer:Customer|null,sellerId:string,session:Session,device:DeviceCredential,shift:Shift,accountingContext:OfflineAccountingContext|null,branchId:string,catalogValidUntil?:string|null,totals:ReturnType<typeof cartTotals>,onSaleSaved:()=>void,onClose:()=>void,onCompleted:(value:any)=>void,notify:(message:string,tone?:'success'|'error'|'info')=>void}){
   const [method,setMethod]=useState<typeof paymentMethods[number]>('cash')
   const [received,setReceived]=useState('')
   const [busy,setBusy]=useState(false)
@@ -257,7 +270,7 @@ function CheckoutModal({open,items,customer,session,device,shift,accountingConte
     const phone=customer?.phone?normalizeEgyptianPhone(customer.phone):''
     if(phone&&!isValidEgyptianPhone(phone)){setError('رقم العميل غير صحيح. صححه أو أزل العميل من الفاتورة.');return}
     paymentLock.current=true;setBusy(true);setError('')
-    const payload={sync_id:crypto.randomUUID(),branch_id:branchId,customer_phone:phone||undefined,items:items.map((item)=>({variant_id:item.variant_id,qty:item.qty,unit_price:item.unit_price,unit_tax:item.unit_tax,price_version:item.price_version,price_token:item.price_token})),payment_method:method,language:'ar',local_total:totals.total}
+    const payload={sync_id:crypto.randomUUID(),branch_id:branchId,seller_id:sellerId,customer_phone:phone||undefined,items:items.map((item)=>({variant_id:item.variant_id,qty:item.qty,unit_price:item.unit_price,unit_tax:item.unit_tax,price_version:item.price_version,price_token:item.price_token})),payment_method:method,language:'ar',local_total:totals.total}
     try{
       const saved=await bold.sale(payload)
       onSaleSaved()
