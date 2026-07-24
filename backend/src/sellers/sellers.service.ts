@@ -1,5 +1,6 @@
 import {
-  BadRequestException, ForbiddenException, Injectable, NotFoundException,
+  BadRequestException, ConflictException, ForbiddenException, Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -29,6 +30,11 @@ export class SellersService {
       throw new BadRequestException('Report start must be before report end');
     }
     return { gte: start, lt: end };
+  }
+
+  private periodBounds(from: string, to: string) {
+    const range = this.dateRange(from, to);
+    return { start: range.gte, endExclusive: range.lt };
   }
 
   async report(
@@ -196,5 +202,85 @@ export class SellersService {
       create: { id: 1 },
       update: {},
     });
+  }
+
+  periods(actor: AuthenticatedUser) {
+    return this.prisma.sellerCommissionPeriod.findMany({
+      where: actor.role === 'owner'
+        ? {}
+        : { rows: { some: { branch_id: actor.branch_id || undefined } } },
+      include: {
+        closer: { select: { id: true, name: true } },
+        rows: {
+          where: actor.role === 'owner'
+            ? {}
+            : { branch_id: actor.branch_id || undefined },
+          orderBy: [{ seller_name: 'asc' }, { seller_id: 'asc' }],
+        },
+      },
+      orderBy: { closed_at: 'desc' },
+      take: 24,
+    });
+  }
+
+  async closePeriod(
+    from: string,
+    to: string,
+    actor: AuthenticatedUser,
+  ) {
+    if (actor.role !== 'owner') {
+      throw new ForbiddenException('Only the owner can close seller periods');
+    }
+    const { start, endExclusive } = this.periodBounds(from, to);
+    if (endExclusive > new Date()) {
+      throw new BadRequestException('Only a completed period can be closed');
+    }
+    const existing = await this.prisma.sellerCommissionPeriod.findUnique({
+      where: {
+        period_start_period_end_exclusive: {
+          period_start: start,
+          period_end_exclusive: endExclusive,
+        },
+      },
+      select: { id: true },
+    });
+    if (existing) throw new ConflictException('This seller period is already closed');
+
+    const [settings, report] = await Promise.all([
+      this.getSettings(),
+      this.report(from, to),
+    ]);
+    const period = await this.prisma.sellerCommissionPeriod.create({
+      data: {
+        period_start: start,
+        period_end_exclusive: endExclusive,
+        period_length_days: settings.period_length_days,
+        default_rate: settings.default_rate,
+        default_target: settings.default_target,
+        default_bonus: settings.default_bonus,
+        closed_by: actor.sub,
+        rows: {
+          create: report.rows.map((row) => ({
+            seller_id: row.seller.id,
+            seller_name: row.seller.name,
+            branch_id: row.seller.branch_id,
+            branch_name: row.seller.branch?.name_ar || null,
+            invoice_count: row.invoice_count,
+            gross_sales_before_tax: row.gross_sales_before_tax,
+            return_count: row.return_count,
+            returns_before_tax: row.returns_before_tax,
+            net_sales_before_tax: row.net_sales_before_tax,
+            commission_rate: row.commission_rate,
+            percentage_commission: row.percentage_commission,
+            target: row.target,
+            target_achieved: row.target_achieved,
+            target_bonus: row.target_bonus,
+            estimated_total: row.estimated_total,
+          })),
+        },
+      },
+      include: { rows: true },
+    });
+    return period;
   }
 }

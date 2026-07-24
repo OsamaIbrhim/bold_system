@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { apiGet, apiPatch, getStoredUser } from '@/lib/api'
+import { apiGet, apiPatch, apiPost, getStoredUser } from '@/lib/api'
 
 function monthRange() {
   const now = new Date()
@@ -29,6 +29,7 @@ export default function SellerReportsPage() {
   const [overrideRate, setOverrideRate] = useState('')
   const [overrideTarget, setOverrideTarget] = useState('')
   const [overrideBonus, setOverrideBonus] = useState('')
+  const [periods, setPeriods] = useState<any[]>([])
 
   useEffect(() => {
     if (actor?.role === 'owner') {
@@ -60,6 +61,21 @@ export default function SellerReportsPage() {
       .then(result => setSettings(result.settings))
       .catch(() => undefined)
   }, [])
+
+  const loadPeriods = () => apiGet('/sellers/periods')
+    .then(setPeriods)
+    .catch(() => setPeriods([]))
+
+  useEffect(() => { void loadPeriods() }, [])
+
+  const closePeriod = async () => {
+    if (!confirm(`إقفال الفترة من ${from} إلى ${to}؟ لن تتغير نتائجها بعد ذلك.`)) return
+    setError('')
+    try {
+      await apiPost('/sellers/periods/close', { from, to })
+      await loadPeriods()
+    } catch (closeError: any) { setError(closeError.message) }
+  }
 
   const saveDefaults = async () => {
     if (!settings) return
@@ -98,12 +114,13 @@ export default function SellerReportsPage() {
       <label>إلى<input className="input mt-1" type="date" value={to} onChange={event => setTo(event.target.value)} /></label>
       {actor?.role === 'owner' && <label>الفرع<select className="select mt-1" value={branchId} onChange={event => { setBranchId(event.target.value); setSellerId('') }}><option value="">كل الفروع</option>{branches.map(branch => <option key={branch.id} value={branch.id}>{branch.name_ar}</option>)}</select></label>}
       <label>البائع<select className="select mt-1" value={sellerId} onChange={event => setSellerId(event.target.value)}><option value="">كل البائعين</option>{sellerOptions.map(row => <option key={row.seller.id} value={row.seller.id}>{row.seller.name}</option>)}</select></label>
-      <button className="btn-accent self-end" disabled={loading || !from || !to} onClick={run}>{loading ? 'جارٍ التحميل…' : 'عرض التقرير'}</button>
+      <div className="self-end flex gap-2"><button className="btn-accent" disabled={loading || !from || !to} onClick={run}>{loading ? 'جارٍ التحميل…' : 'عرض التقرير'}</button>{actor?.role === 'owner' && <button className="btn" disabled={!from || !to} onClick={closePeriod}>إقفال الفترة</button>}</div>
     </div>
     {error && <div className="card text-red-700" role="alert">{error}</div>}
     <div className="card overflow-auto"><table><thead><tr><th>البائع</th><th>الفرع</th><th>الفواتير</th><th>إجمالي قبل الضريبة</th><th>المرتجعات</th><th>صافي المبيعات</th><th>النسبة</th><th>عمولة النسبة</th><th>مكافأة الهدف</th><th>الإجمالي التقديري</th></tr></thead><tbody>
       {rows.map(row => <tr key={row.seller.id}><td>{row.seller.name}</td><td>{row.seller.branch?.name_ar || '—'}</td><td>{row.invoice_count}</td><td>{Number(row.gross_sales_before_tax).toFixed(2)}</td><td>{Number(row.returns_before_tax).toFixed(2)}</td><td className="font-bold">{Number(row.net_sales_before_tax).toFixed(2)}</td><td>{row.commission_rate}%</td><td>{Number(row.percentage_commission).toFixed(2)}</td><td>{Number(row.target_bonus).toFixed(2)} {row.target_achieved ? '✓' : ''}</td><td className="font-bold">{Number(row.estimated_total).toFixed(2)}</td></tr>)}
       {!rows.length && <tr><td colSpan={10} className="text-center py-8 text-gray-500">لا توجد مبيعات بائعين في الفترة المحددة.</td></tr>}
     </tbody></table></div>
+    <div className="card overflow-auto"><h2 className="font-bold mb-3">الفترات المقفلة</h2><table><thead><tr><th>الفترة</th><th>أغلقها</th><th>تاريخ الإقفال</th><th>عدد البائعين</th><th>الإجمالي التقديري المحفوظ</th></tr></thead><tbody>{periods.map(period=><tr key={period.id}><td>{new Date(period.period_start).toLocaleDateString('ar-EG')} — {new Date(new Date(period.period_end_exclusive).getTime()-1).toLocaleDateString('ar-EG')}</td><td>{period.closer?.name||'—'}</td><td>{new Date(period.closed_at).toLocaleString('ar-EG')}</td><td>{period.rows?.length||0}</td><td>{(period.rows||[]).reduce((sum:number,row:any)=>sum+Number(row.estimated_total||0),0).toFixed(2)}</td></tr>)}{!periods.length&&<tr><td colSpan={5} className="text-center py-8 text-gray-500">لم يتم إقفال أي فترة بعد.</td></tr>}</tbody></table></div>
   </div>
 }

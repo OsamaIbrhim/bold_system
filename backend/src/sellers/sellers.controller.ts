@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { SellersService } from './sellers.service';
 import { RequireCapabilities } from '../auth/roles.guard';
@@ -8,6 +8,7 @@ import {
   UpdateCommissionSettingsDto,
   UpdateSellerCommissionDto,
 } from './dto/commission-settings.dto';
+import { CloseSellerPeriodDto } from './dto/close-period.dto';
 
 @Controller('sellers')
 export class SellersController {
@@ -53,5 +54,20 @@ export class SellersController {
     @Req() req: Request & { user: AuthenticatedUser },
   ) {
     return this.service.updateSellerSettings(sellerId, dto, req.user);
+  }
+
+  @Get('periods')
+  @RequireCapabilities('seller_reports.read')
+  periods(@Req() req: Request & { user: AuthenticatedUser }) {
+    return this.service.periods(req.user);
+  }
+
+  @Post('periods/close')
+  @RequireCapabilities('seller_periods.close')
+  closePeriod(
+    @Body() dto: CloseSellerPeriodDto,
+    @Req() req: Request & { user: AuthenticatedUser },
+  ) {
+    return this.service.closePeriod(dto.from, dto.to, req.user);
   }
 }
