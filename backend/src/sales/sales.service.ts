@@ -416,7 +416,18 @@ export class SalesService {
       const variantsById = new Map<string, any>(
         variants.map((variant: any) => [variant.id, variant]),
       );
-      const currentQuotes = await this.pricing.calculateMany(context, variants, tx);
+      // WP-008 Phase B: `calculateMany` now prices per (variant, qty) pair
+      // (BR-PSL-104 quantity breaks) -- `normalized.lines` already merges
+      // duplicate variant_ids into one line with a summed qty
+      // (`normalizeLines`), so this is exactly one line per priced variant.
+      const currentQuotes = await this.pricing.calculateMany(
+        context,
+        normalized.lines.map((line) => ({
+          variant: variantsById.get(line.variant_id)!,
+          qty: line.qty,
+        })),
+        tx,
+      );
 
       const saleItems = normalized.lines.map((line) => {
         const variant = variantsById.get(line.variant_id)!;

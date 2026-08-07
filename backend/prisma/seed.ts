@@ -30,6 +30,8 @@ async function main() {
   await prisma.product.deleteMany();
   await prisma.customer.deleteMany();
   await prisma.auditLog.deleteMany();
+  await prisma.priceBookEntry.deleteMany();
+  await prisma.priceBook.deleteMany();
   await prisma.pricingRule.deleteMany();
   await prisma.supplier.deleteMany();
   await prisma.accessScopeAssignment.deleteMany();
@@ -172,7 +174,7 @@ async function main() {
       },
       include: { variants: true }
     });
-    allVariants.push(...prod.variants.map(v => ({ ...v, product_name: p.name_en, brand: p.brand })));
+    allVariants.push(...prod.variants.map(v => ({ ...v, product_name: p.name_en, brand: p.brand, category_id: p.category_id })));
   }
 
   // Inventory
@@ -183,10 +185,52 @@ async function main() {
     await prisma.inventoryStock.create({ data: { tenant_id, branch_id: b2.id, variant_id: v.id, qty_on_hand: Math.floor(deterministicRandom()*12), last_sold_at: deterministicRandom() > 0.5 ? new Date(Date.now() - deterministicRandom()*90*86400000) : null }});
   }
 
-  // Pricing rules
+  // Pricing rules -- WP-008 Phase B: deprecated, PricingService no longer
+  // reads this table. Kept only because seeded data is never destructively
+  // dropped; the Price Book below is what actually prices these variants now.
   await prisma.pricingRule.create({ data: { tenant_id, name: 'Global Default EG', scope_type: 'global', overhead_percent: 20, profit_percent: 35, tax_percent: 14, formula: 'compound', is_protected: true, priority: 999 }});
   await prisma.pricingRule.create({ data: { tenant_id, name: 'Jeans – 45% Profit', scope_type: 'category', scope_id: cat_j.id, overhead_percent: 20, profit_percent: 45, tax_percent: 14, formula: 'compound', priority: 50 }});
   await prisma.pricingRule.create({ data: { tenant_id, name: 'T-Shirts – 30% Profit', scope_type: 'category', scope_id: cat_t.id, overhead_percent: 20, profit_percent: 30, tax_percent: 14, formula: 'compound', priority: 50 }});
+
+  // Price Book (WP-008 Phase B, BR-PSL-101): the PricingRule rows above no
+  // longer price anything -- an unpriced variant blocks sale by default
+  // under the new engine, so every seeded variant needs a real
+  // PriceBookEntry, not just a PricingRule row. One variant-scoped entry per
+  // variant (not a category/global entry), computed with the same
+  // overhead/profit rates the PricingRule rows above encode, so seeded demo
+  // prices are numerically unchanged from before this phase.
+  const priceBook = await prisma.priceBook.create({
+    data: {
+      tenant_id,
+      name: 'Default Price Book',
+      currency: tenant.default_currency ?? 'EGP',
+      scope: 'tenant_default',
+      status: 'active',
+      is_default: true,
+      activated_at: new Date(),
+    },
+  });
+  const categoryProfitPercent: Record<string, number> = { [cat_j.id]: 45, [cat_t.id]: 30 };
+  for (const v of allVariants) {
+    const overheadPercent = 20;
+    const profitPercent = categoryProfitPercent[v.category_id ?? ''] ?? 35;
+    const cost = Number(v.cost_price);
+    const unitPrice = Math.round(cost * (1 + overheadPercent / 100) * (1 + profitPercent / 100) * 100) / 100;
+    await prisma.priceBookEntry.create({
+      data: {
+        tenant_id,
+        price_book_id: priceBook.id,
+        scope_type: 'variant',
+        scope_id: v.id,
+        min_qty: 1,
+        unit_price: unitPrice,
+        allow_zero_price: false,
+        tax_percent: 14,
+        version: 1,
+        status: 'active',
+      },
+    });
+  }
 
   // Customers
   const custData = [

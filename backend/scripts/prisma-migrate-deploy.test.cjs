@@ -10,11 +10,16 @@ const {
 } = require('./prisma-migrate-deploy.cjs');
 
 test('reports the repository migration history used by deployment', () => {
-  assert.equal(countMigrationFolders(), 147);
+  // WP-008 Phase A added 6 migration folders (147 -> 153) without updating
+  // this assertion -- its own "backend" CI job never ran to completion for
+  // that PR (cancelled by a runner-availability issue upstream), so nothing
+  // caught the staleness until WP-008 Phase B's 6 more migrations made the
+  // mismatch visible (159 !== 147).
+  assert.equal(countMigrationFolders(), 160);
   assert.deepEqual(listMigrationFolders().slice(-3), [
-    '202608040110_tenant_scoped_unique_supplierreturn_return_number',
-    '202608040111_tenant_scoped_unique_transfer_transfer_number',
-    '202608040112_fix_ledger_triggers_tenant_id',
+    '202608070005_add_discount_table',
+    '202608070006_migrate_pricing_rules_to_price_books',
+    '202608070007_add_price_book_sync_triggers',
   ]);
 });
 

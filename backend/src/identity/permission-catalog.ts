@@ -56,7 +56,7 @@ import {
  * listed in the PR description as knowingly-open items, not silently skipped.
  */
 
-/** Matrix §16 Product Catalog, §17 Pricing, §19 Promotions. */
+/** Matrix §16 Product Catalog, §19 Promotions. */
 const CATALOG_PERMISSIONS = [
   'catalog.product.view',
   'catalog.product.view-cost-sensitive',
@@ -74,15 +74,36 @@ const CATALOG_PERMISSIONS = [
   'catalog.uom-conversion.publish',
   'catalog.assortment.view',
   'catalog.assortment.manage',
-  'pricing.price-book.view',
-  'pricing.price-entry.manage',
-  'pricing.cost.view',
-  'pricing.margin.view',
   'promotion.view',
   'promotion.create',
   'promotion.update-draft',
   'promotion.approve',
   'promotion.end',
+] as const;
+
+/**
+ * Matrix §17 Pricing. `pricing.price-book.view`/`pricing.price-entry.manage`/
+ * `pricing.cost.view`/`pricing.margin.view` already existed (WP-007 Phase A);
+ * WP-008 Phase B adds the rest of the maker-checker lifecycle keys plus
+ * override/floor/export — the full key list the Matrix declares for §17.
+ */
+const PRICING_PERMISSIONS = [
+  'pricing.price-book.view',
+  'pricing.price-book.create',
+  'pricing.price-book.update-draft',
+  'pricing.price-book.submit',
+  'pricing.price-book.approve',
+  'pricing.price-book.schedule',
+  'pricing.price-book.activate',
+  'pricing.price-book.end',
+  'pricing.price-entry.manage',
+  'pricing.cost.view',
+  'pricing.margin.view',
+  'pricing.floor.configure',
+  'pricing.manual-override.apply',
+  'pricing.manual-override.approve',
+  'pricing.manual-override.above-threshold',
+  'pricing.export',
 ] as const;
 
 /** Matrix §20 Sales, §28 Returns. */
@@ -195,6 +216,7 @@ const TENANT_STRUCTURE_PERMISSIONS = [
 
 export const BUSINESS_PERMISSIONS = [
   ...CATALOG_PERMISSIONS,
+  ...PRICING_PERMISSIONS,
   ...SALES_PERMISSIONS,
   ...INVENTORY_PERMISSIONS,
   ...PURCHASING_PERMISSIONS,
@@ -237,6 +259,11 @@ const CASHIER_GRANTS: readonly BusinessPermission[] = [
   // every cashier-operated terminal fails the permission check on every
   // heartbeat and can never advance past it to pull catalog updates.
   'terminal.view-health',
+  // Matrix §406: cashier manual override within a role-configured limit is
+  // P0/P1 (no separate approval); below-floor is always a separate approval
+  // (`pricing.manual-override.above-threshold`, deliberately NOT granted
+  // here — see the header comment on this file for the derivation rule).
+  'pricing.manual-override.apply',
 ];
 
 /** No Matrix template; the legacy `seller` role is read-only today. */
@@ -304,10 +331,12 @@ const WAREHOUSE_MANAGER_GRANTS: readonly BusinessPermission[] = [
 /** Matrix §50 Store Manager: location-scoped oversight plus approvals. */
 const LOCATION_MANAGER_GRANTS: readonly BusinessPermission[] = [
   ...WAREHOUSE_MANAGER_GRANTS,
-  'pricing.price-book.view',
-  'pricing.price-entry.manage',
-  'pricing.cost.view',
-  'pricing.margin.view',
+  // WP-008 Phase B: full Price Book maker-checker lifecycle, floor
+  // configuration, and override approval — Store Manager is the
+  // location-scoped pricing authority (Matrix §50 "Local ... approvals").
+  // Self-approval (creator === approver) is still blocked at the service
+  // layer regardless of holding both keys (Matrix §17 "Separation").
+  ...PRICING_PERMISSIONS,
   'promotion.view',
   'promotion.create',
   'promotion.update-draft',
@@ -390,8 +419,23 @@ function dedupe<T>(values: readonly T[]): readonly T[] {
  * that already manage `catalog.product.*`/`catalog.variant.*`. `cashier` and
  * `seller` are unchanged; this phase built no POS-facing consumer of these
  * keys.
+ *
+ * v4 -> v5: WP-008 Phase B adds the remaining Matrix §17 Pricing keys
+ * (`pricing.price-book.create/update-draft/submit/approve/schedule/
+ * activate/end`, `pricing.floor.configure`,
+ * `pricing.manual-override.apply/approve/above-threshold`,
+ * `pricing.export`) alongside the four that already existed. `cashier`
+ * gains only `pricing.manual-override.apply` (Matrix §406: within-limit
+ * override is P0/P1, no separate approval); `location_manager` gains the
+ * full Pricing key set (Matrix §50 Store Manager: location-scoped pricing
+ * authority); `warehouse_manager`/`seller` are unchanged — neither role
+ * manages pricing today. Self-approval (a Price Book's creator approving
+ * their own submission) is blocked at the service layer even for a role
+ * holding both `pricing.price-book.submit` and `.approve` — the permission
+ * catalog only ever expresses "may this role call this endpoint," not the
+ * per-instance maker-checker check (Matrix §17 "Separation").
  */
-export const PERMISSION_POLICY_CURRENT_VERSION = 4;
+export const PERMISSION_POLICY_CURRENT_VERSION = 5;
 
 export const ALL_ROLE_PERMISSIONS: Readonly<Record<MembershipRole, readonly AthrPermission[]>> =
   Object.fromEntries(

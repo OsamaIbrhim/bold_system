@@ -1,6 +1,7 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingService } from '../pricing/pricing.service';
+import { AthrDomainError } from '../common/http/athr-exception.filter';
 import { AuthenticatedUser } from '../auth/authenticated-user';
 import { assertBranchAccess } from '../auth/branch-access';
 import { decimal, moneyNumber } from '../common/money';
@@ -9,6 +10,8 @@ import type { TenantContext } from '../identity/tenant-context.type';
 
 @Injectable()
 export class OffersService {
+  private readonly logger = new Logger(OffersService.name);
+
   constructor(private prisma: PrismaService, private pricing: PricingService) {}
 
   async suggestions(context: TenantContext, branch_id?: string) {
@@ -33,7 +36,20 @@ export class OffersService {
     for (const stock of slow) {
       const key = `${stock.branch_id}:${stock.variant_id}`;
       if (pendingByStock.has(key)) continue;
-      const quote = await this.pricing.calculate(context, stock.variant_id);
+      // WP-008 Phase B: BR-PSL-101 -- a variant with no resolvable Price Book
+      // entry throws instead of silently falling back to a price. That is
+      // correct for a sale, but one unpriced slow-mover must not abort the
+      // whole suggestions batch -- it just isn't eligible for a suggestion.
+      let quote: Awaited<ReturnType<PricingService['calculate']>>;
+      try {
+        quote = await this.pricing.calculate(context, stock.variant_id);
+      } catch (error) {
+        if (error instanceof AthrDomainError && error.code === 'PRICING_NO_PRICE_AVAILABLE') {
+          this.logger.warn(`Skipping offer suggestion for unpriced variant ${stock.variant_id}`);
+          continue;
+        }
+        throw error;
+      }
       const currentPrice = quote.selling_price;
       const suggestedPrice = moneyNumber(
         Prisma.Decimal.max(

@@ -18,6 +18,8 @@ const VARIANT_A = randomUUID();
 const VARIANT_B = randomUUID();
 const BRANCH_A = randomUUID();
 const BRANCH_B = randomUUID();
+const PRICE_BOOK_A = randomUUID();
+const PRICE_BOOK_B = randomUUID();
 
 function setup() {
   const prisma = fakePrisma({
@@ -53,10 +55,29 @@ function setup() {
       { tenant_id: TENANT_A, branch_id: BRANCH_A, variant_id: VARIANT_A, qty_on_hand: 3 },
       { tenant_id: TENANT_B, branch_id: BRANCH_B, variant_id: VARIANT_B, qty_on_hand: 7 },
     ],
+    priceBook: [
+      { id: PRICE_BOOK_A, tenant_id: TENANT_A, status: 'active', is_default: true },
+      { id: PRICE_BOOK_B, tenant_id: TENANT_B, status: 'active', is_default: true },
+    ],
+    priceBookEntry: [
+      {
+        id: randomUUID(), tenant_id: TENANT_A, price_book_id: PRICE_BOOK_A,
+        scope_type: 'global', scope_id: null, min_qty: 1, unit_price: 20,
+        allow_zero_price: false, tax_percent: 14, floor_price: null,
+        effective_from: new Date(0), effective_to: null, status: 'active',
+      },
+      {
+        id: randomUUID(), tenant_id: TENANT_B, price_book_id: PRICE_BOOK_B,
+        scope_type: 'global', scope_id: null, min_qty: 1, unit_price: 30,
+        allow_zero_price: false, tax_percent: 14, floor_price: null,
+        effective_from: new Date(0), effective_to: null, status: 'active',
+      },
+    ],
     pricingRule: [],
     user: [],
   }, {
     productVariant: { product: { table: 'product', localKey: 'product_id' } },
+    priceBookEntry: { price_book: { table: 'priceBook', localKey: 'price_book_id' } },
   });
   prisma.syncChange.aggregate = async ({ where }: any) => {
     const rows = prisma.syncChange.rows.filter(

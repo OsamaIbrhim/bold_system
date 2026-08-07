@@ -15,6 +15,7 @@ import { AUTH_ERROR_CODES } from './codes/auth';
 import { INTERNAL_ERROR_CODES } from './codes/internal';
 import { IDENTITY_ERROR_CODES } from './codes/identity';
 import { CATALOG_ERROR_CODES } from './codes/catalog';
+import { PRICING_ERROR_CODES } from './codes/pricing';
 
 export const ERROR_SEVERITIES = ['info', 'warning', 'error', 'critical'] as const;
 export type ErrorSeverity = (typeof ERROR_SEVERITIES)[number];
@@ -37,6 +38,7 @@ const REGISTERED_DEFINITIONS = [
   ...INTERNAL_ERROR_CODES,
   ...IDENTITY_ERROR_CODES,
   ...CATALOG_ERROR_CODES,
+  ...PRICING_ERROR_CODES,
 ] as const;
 
 export type ErrorCode =
@@ -44,7 +46,8 @@ export type ErrorCode =
   | (typeof AUTH_ERROR_CODES)[number]['code']
   | (typeof INTERNAL_ERROR_CODES)[number]['code']
   | (typeof IDENTITY_ERROR_CODES)[number]['code']
-  | (typeof CATALOG_ERROR_CODES)[number]['code'];
+  | (typeof CATALOG_ERROR_CODES)[number]['code']
+  | (typeof PRICING_ERROR_CODES)[number]['code'];
 
 export const ERROR_REGISTRY: Readonly<Record<ErrorCode, ErrorMetadata>> = Object.freeze(
   Object.fromEntries(REGISTERED_DEFINITIONS.map((definition) => [definition.code, definition])),

@@ -142,6 +142,14 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
         run: node scripts/verify-tenant-constraints.cjs
+      # WP-008 Phase B: POS sync emission, default-Price-Book replacement and
+      # the PricingRule tie-break are all enforced by the database, not by
+      # application code -- they can only be proven against a real one.
+      - name: Verify Price Book behaviour (WP-008 Phase B)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_clean
+        run: node scripts/verify-price-book-behaviour.cjs
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.policy.outputs.upgrade_ref }}
@@ -168,9 +176,18 @@ jobs:
           SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/athr_migrations_upgrade_shadow
         run: |
           npx prisma generate
+          # WP-008 Phase B / CLAUDE.md §6 "fail loud on ambiguous data": the
+          # PricingRule -> PriceBook cutover's accounting. The migration's own
+          # RAISE NOTICE is invisible (`prisma migrate deploy` does not print
+          # PostgreSQL NOTICE messages), so the standalone validator runs here
+          # instead -- pre-migration for the ambiguous-row report, and
+          # post-migration for the hard 1:1 "no live variant lost its price"
+          # invariant, which exits non-zero and fails this job.
+          node scripts/validate-pricing-rule-migration.cjs
           npx prisma migrate deploy
           npx prisma migrate deploy
           npx prisma migrate status
+          node scripts/validate-pricing-rule-migration.cjs --post-check
           npx prisma migrate diff --exit-code \
             --from-migrations prisma/migrations \
             --to-url "$DIRECT_URL" \

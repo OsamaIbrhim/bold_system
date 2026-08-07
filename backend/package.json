@@ -20,7 +20,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "node scripts/prisma-migrate-deploy.cjs",
-    "test:deployment": "node --test scripts/prisma-migrate-deploy.test.cjs",
+    "test:deployment": "node --test scripts/prisma-migrate-deploy.test.cjs scripts/validate-tenant-backfill.test.cjs scripts/validate-pricing-rule-migration.test.cjs",
     "prisma:migrations:policy": "node scripts/check-migration-policy.cjs",
     "prisma:seed": "ts-node prisma/reset-development-accounting.ts && ts-node prisma/seed.ts && node prisma/ensure-seeded-inventory-ledger.mjs && node prisma/ensure-seeded-cost-ledger.mjs && node prisma/validate-development-seed.mjs",
     "prisma:seed:production": "ts-node prisma/seed-production.ts",

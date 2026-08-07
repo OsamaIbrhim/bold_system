@@ -77,9 +77,13 @@ export class SyncService {
     const presentIds = new Set(variants.map((variant) => variant.id));
     const deletedVariantIds = resetCatalog ? [] : [...requestedIds].filter((id) => !presentIds.has(id));
     const quotes = this.pricing.quoteMany(variants, rules);
-    const products = variants.map((variant) =>
-      this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt),
-    );
+    // WP-008 Phase B (BR-PSL-101): a variant with no resolvable price is
+    // omitted from `quotes` rather than throwing (unlike `calculate`) --
+    // the offline catalog snapshot must not fail entirely for one unpriced
+    // item. It is simply not advertised to POS until it is priced.
+    const products = variants
+      .filter((variant) => quotes.has(variant.id))
+      .map((variant) => this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt));
 
     return {
       mode: 'delta',
@@ -115,9 +119,9 @@ export class SyncService {
     ]);
     const issuedAt = new Date().toISOString();
     const quotes = this.pricing.quoteMany(variants, rules);
-    const products = variants.map((variant) =>
-      this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt),
-    );
+    const products = variants
+      .filter((variant) => quotes.has(variant.id))
+      .map((variant) => this.productSnapshot(variant, quotes.get(variant.id)!, issuedAt));
     return {
       mode: 'snapshot',
       cursor: (cursor._max.sequence || 0n).toString(),

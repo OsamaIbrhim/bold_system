@@ -530,6 +530,8 @@ model ProductVariant {
   return_items               ReturnItem[]
   offer_suggestions          OfferSuggestion[]
   assortments                Assortment[]
+  price_overrides            PriceOverride[]
+  discounts                  Discount[]
   tenant_id                  String                    @db.Uuid
 
   @@unique([tenant_id, sku])
@@ -633,6 +635,12 @@ model Assortment {
   @@index([variant_id])
 }
 
+// WP-008 Phase B (BR §13-16): deprecated by "PriceBook"/"PriceBookEntry" --
+// kept as-is (forward-only migration policy, no destructive drop) and no
+// longer read by "PricingService". Every row was migrated by the
+// "202608070001_add_price_book_tables" backfill; see that migration's
+// validation block and the Phase B PR description for the exact accounting
+// (rows migrated vs. rows reported ambiguous).
 model PricingRule {
   id               String  @id @default(uuid()) @db.Uuid
   name             String
@@ -649,6 +657,214 @@ model PricingRule {
   tenant_id        String  @db.Uuid
 
   @@index([tenant_id])
+}
+
+// WP-008 Phase B (BR-PRB-1xx): tenant-owned, single-currency (BR-PRB-100,
+// OD-CAT-005 -- MVP pilots one operating currency) price list with an
+// explicit maker-checker lifecycle (BR-PRB-101, Permission Matrix §17).
+// "scope"/"scope_ref_id" model which *book* applies (tenant default vs. a
+// narrower location/customer-group/contract/wholesale book per BR-PRB-101's
+// examples); only "tenant_default" scope selection is implemented/tested in
+// this phase -- see the Phase B PR description for why the others are
+// modelled but not yet wired into selection.
+enum PriceBookScope {
+  tenant_default
+  location
+  customer_group
+  contract
+  wholesale
+}
+
+enum PriceBookStatus {
+  draft
+  submitted
+  approved
+  scheduled
+  active
+  ended
+  archived
+}
+
+model PriceBook {
+  id             String           @id @default(uuid()) @db.Uuid
+  tenant_id      String           @db.Uuid
+  name           String
+  // BR-PRB-100: one currency per book. Phase B enforces this equals the
+  // owning Tenant's "default_currency" (OD-CAT-005 single-operating-currency
+  // MVP) at the service layer, not here.
+  currency       String
+  scope          PriceBookScope   @default(tenant_default)
+  scope_ref_id   String?          @db.Uuid
+  status         PriceBookStatus  @default(draft)
+  // BR-PRB-104: one *active* default book per (currency, scope,
+  // scope_ref_id) -- enforced by a partial unique index in the migration
+  // (NULLs in "scope_ref_id" collapsed via COALESCE so multiple tenant-wide
+  // defaults can't coexist either). The index is scoped to status = 'active'
+  // so a replacement can be drafted and scheduled alongside the book it will
+  // replace; "PriceBookService.activate" swaps them in one transaction.
+  is_default     Boolean          @default(false)
+  effective_from DateTime?
+  effective_to   DateTime?
+  created_by     String?          @db.Uuid
+  submitted_by   String?          @db.Uuid
+  submitted_at   DateTime?
+  approved_by    String?          @db.Uuid
+  approved_at    DateTime?
+  scheduled_by   String?          @db.Uuid
+  scheduled_at   DateTime?
+  activated_by   String?          @db.Uuid
+  activated_at   DateTime?
+  ended_by       String?          @db.Uuid
+  ended_at       DateTime?
+  created_at     DateTime         @default(now())
+  updated_at     DateTime         @updatedAt
+  entries        PriceBookEntry[]
+
+  @@unique([tenant_id, id])
+  @@index([tenant_id])
+  @@index([tenant_id, status])
+}
+
+// WP-008 Phase B (BR-PSL-100): the entity-level scope a "PriceBookEntry"
+// resolves against -- variant -> product -> brand -> category -> global is
+// the deterministic priority order "PricingService" walks (same chain the
+// legacy "PricingRule.scope_type" approximated).
+enum PriceEntryScopeType {
+  variant
+  product
+  brand
+  category
+  global
+}
+
+enum PriceEntryStatus {
+  active
+  superseded
+}
+
+// WP-008 Phase B (BR-PRB-102/103): effective-dated and versioned the same
+// way "UomConversion" is (Phase A precedent) -- there is deliberately no
+// "update" mutation, only "create" (first version) and "supersede" (new
+// version + marks the previous row "superseded"). "min_qty" carries the
+// quantity-break threshold (BR-PSL-104): multiple entries may share the same
+// ("price_book_id","scope_type","scope_id") at different "min_qty"
+// thresholds, and the engine picks the highest qualifying "min_qty" <= the
+// requested quantity.
+model PriceBookEntry {
+  id               String              @id @default(uuid()) @db.Uuid
+  tenant_id        String              @db.Uuid
+  price_book_id    String              @db.Uuid
+  price_book       PriceBook           @relation(fields: [tenant_id, price_book_id], references: [tenant_id, id], onDelete: Restrict)
+  scope_type       PriceEntryScopeType
+  // Plain UUID, not a Prisma relation -- polymorphic across
+  // Variant/Product/Brand/Category (null for "global"), same reason
+  // "PricingRule.scope_id" never had an FK either.
+  scope_id         String?             @db.Uuid
+  min_qty          Decimal             @default(1) @db.Decimal(12, 3)
+  // Net, tax-exclusive selling price (BR-PSL-103: never negative, enforced
+  // at the service layer and by the migration's validation guard).
+  unit_price       Decimal             @db.Decimal(12, 2)
+  // BR-PSL-102: a zero price is only valid with this explicit allowance.
+  allow_zero_price Boolean             @default(false)
+  // Interim flat rate carried over from the pre-Phase-C engine so existing
+  // "PricingService" callers keep receiving tax_amount/tax_percent; Phase C
+  // (Tax Codes, BR-TAX-2xx) replaces this with the real versioned model.
+  tax_percent      Decimal             @default(14) @db.Decimal(5, 2)
+  // BR-OVP-102: explicit floor for this entry; a manual override below this
+  // requires "pricing.manual-override.above-threshold". Null falls back to
+  // the priced Variant's "cost_price" (cost-based floor) at evaluation time.
+  floor_price      Decimal?            @db.Decimal(12, 2)
+  effective_from   DateTime            @default(now())
+  effective_to     DateTime?
+  version          Int                 @default(1)
+  status           PriceEntryStatus    @default(active)
+  superseded_by_id String?             @db.Uuid
+  superseded_at    DateTime?
+  created_by       String?             @db.Uuid
+  created_at       DateTime            @default(now())
+
+  @@unique([tenant_id, id])
+  @@index([tenant_id])
+  @@index([tenant_id, price_book_id, scope_type, scope_id, status])
+}
+
+// WP-008 Phase B (BR-OVP-101): per-role override limits an owner/manager
+// configures via "pricing.floor.configure". Absent row for a role = no
+// tenant-configured limit (service layer still enforces the floor/approval
+// invariants regardless).
+model PriceOverridePolicy {
+  id                   String         @id @default(uuid()) @db.Uuid
+  tenant_id            String         @db.Uuid
+  role                 MembershipRole
+  max_discount_percent Decimal?       @db.Decimal(5, 2)
+  max_discount_amount  Decimal?       @db.Decimal(12, 2)
+  allow_price_increase Boolean        @default(true)
+  created_at           DateTime       @default(now())
+  updated_at           DateTime       @updatedAt
+
+  @@unique([tenant_id, id])
+  @@unique([tenant_id, role])
+  @@index([tenant_id])
+}
+
+// WP-008 Phase B (BR-OVP-100): a manual override is a distinct, audited
+// change to the applied unit price at sale time -- never a silent edit to
+// the Price Book (BR-OVP-103). "is_below_floor" rows require "approved_by"
+// (BR-OVP-102, "pricing.manual-override.above-threshold") before they may be
+// applied; enforced in "OverridesService", not by a DB constraint, since the
+// approval can be recorded either at request time (pre-approved) or async.
+model PriceOverride {
+  id             String         @id @default(uuid()) @db.Uuid
+  tenant_id      String         @db.Uuid
+  variant_id     String         @db.Uuid
+  variant        ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  // Opaque caller-supplied reference (e.g. a sale/line id) -- deliberately
+  // not an FK so the pricing module stays independent of the sales module
+  // (CLAUDE.md §2.2 / Multi-tenancy Blueprint §28).
+  reference      String?
+  base_price     Decimal        @db.Decimal(12, 2)
+  override_price Decimal        @db.Decimal(12, 2)
+  floor_price    Decimal?       @db.Decimal(12, 2)
+  is_below_floor Boolean        @default(false)
+  reason         String
+  applied_by     String         @db.Uuid
+  approved_by    String?        @db.Uuid
+  approved_at    DateTime?
+  created_at     DateTime       @default(now())
+
+  @@unique([tenant_id, id])
+  @@index([tenant_id])
+  @@index([tenant_id, variant_id])
+}
+
+// WP-008 Phase B (BR-DSC-200/205): a calculated adjustment, distinct from a
+// "PriceOverride" -- never mutates the Price Book. "source" is a plain
+// string (not an enum) so Phase D can add "promotion" without a migration;
+// only "manual" is produced in this phase (Promotions are explicitly out of
+// scope, WP doc §B.5).
+enum DiscountBasis {
+  percentage
+  fixed_amount
+}
+
+model Discount {
+  id          String         @id @default(uuid()) @db.Uuid
+  tenant_id   String         @db.Uuid
+  variant_id  String         @db.Uuid
+  variant     ProductVariant @relation(fields: [tenant_id, variant_id], references: [tenant_id, id], onDelete: Restrict)
+  reference   String?
+  source      String         @default("manual")
+  basis       DiscountBasis
+  amount      Decimal        @db.Decimal(12, 2)
+  base_price  Decimal        @db.Decimal(12, 2)
+  final_price Decimal        @db.Decimal(12, 2)
+  reason      String?
+  applied_by  String         @db.Uuid
+  created_at  DateTime       @default(now())
+
+  @@unique([tenant_id, id])
+  @@index([tenant_id])
+  @@index([tenant_id, variant_id])
 }
 
 model InventoryStock {
